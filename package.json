@@ -1,0 +1,24 @@
+{
+  "name": "browsercrawl-serp-api",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json --outDir dist",
+    "lint": "echo \"(add a linter)\""
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^7.0.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "undici": "^6.20.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
