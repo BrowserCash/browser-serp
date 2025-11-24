@@ -1,43 +1,129 @@
+import { chromium } from 'patchright-core'
 import { request } from 'undici'
 import { loadEnvString } from '../lib/env.js'
 
 const BROWSER_CASH_API_KEY = loadEnvString('BROWSER_CASH_API_KEY')
-const BROWSER_CASH_BASE = loadEnvString('BROWSER_CASH_BASE', 'https://browser-api.browser.cash')
+// Public API host that fronts browser + agent endpoints.
+const BROWSER_CASH_BASE = loadEnvString('BROWSER_CASH_BASE', 'https://api.browser.cash')
 
-// Minimal stub to dispatch a search through browser.cash.
-// This is intentionally simplified; wire to your actual runner/agent endpoints.
-export async function dispatchBrowserQuery(params: {
+type SearchParams = {
   q: string
   country?: string
   search_lang?: string
   count: number
   freshness?: 'day' | 'week' | 'month' | 'year'
   safesearch?: 'off' | 'moderate' | 'strict'
-}) {
-  const body = {
-    query: params.q,
-    country: params.country,
-    lang: params.search_lang,
-    count: params.count,
-    freshness: params.freshness,
-    safesearch: params.safesearch,
-  }
+}
 
-  const res = await request(`${BROWSER_CASH_BASE}/v1/consumer/session`, {
-    method: 'POST',
+type SessionResponse = {
+  sessionId: string
+  status: string
+  servedBy?: string
+  createdAt?: string
+  stoppedAt?: string | null
+  cdpUrl?: string | null
+}
+
+async function httpJson<T>(path: string, opts: { method?: string; body?: any; headers?: Record<string, string> } = {}): Promise<T> {
+  const res = await request(`${BROWSER_CASH_BASE}${path}`, {
+    method: opts.method || 'GET',
     headers: {
       authorization: `Bearer ${BROWSER_CASH_API_KEY}`,
       'content-type': 'application/json',
+      ...opts.headers,
     },
-    body: JSON.stringify(body),
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  })
+  const text = await res.body.text()
+  if (res.statusCode >= 400) {
+    throw new Error(`browser.cash ${res.statusCode}: ${text}`)
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`browser.cash parse error: ${text}`)
+  }
+}
+
+async function createSession(): Promise<SessionResponse> {
+  return httpJson<SessionResponse>('/v1/browser/session', { method: 'POST', body: {} })
+}
+
+async function getSession(sessionId: string): Promise<SessionResponse> {
+  return httpJson<SessionResponse>(`/v1/browser/session?sessionId=${encodeURIComponent(sessionId)}`)
+}
+
+async function stopSession(sessionId: string): Promise<void> {
+  try {
+    await httpJson('/v1/browser/session?sessionId=' + encodeURIComponent(sessionId), { method: 'DELETE' })
+  } catch {
+    // Swallow cleanup errors to avoid masking the primary failure
+  }
+}
+
+async function waitForActiveSession(sessionId: string, timeoutMs = 20_000): Promise<SessionResponse> {
+  const start = Date.now()
+  let last: SessionResponse | null = null
+  while (Date.now() - start < timeoutMs) {
+    last = await getSession(sessionId)
+    if (last.status === 'active' && last.cdpUrl) return last
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+  }
+  throw new Error(`Timed out waiting for session ${sessionId} to become active`)
+}
+
+async function runBingSearch(page: any, params: SearchParams) {
+  const count = Math.min(Math.max(params.count ?? 10, 1), 20)
+  const locale = params.search_lang && params.country ? `${params.search_lang}-${params.country}` : params.search_lang || 'en-US'
+  const query = encodeURIComponent(params.q)
+  const searchUrl = `https://www.bing.com/search?q=${query}&count=${count}&setlang=${encodeURIComponent(locale)}`
+
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+  await page.waitForSelector('li.b_algo h2 a', { timeout: 10_000 }).catch(() => {})
+
+  const results = await page.evaluate(() => {
+    const items: { title: string; url: string; description: string; position: number }[] = []
+    document.querySelectorAll<HTMLLIElement>('li.b_algo').forEach((el, idx) => {
+      const link = el.querySelector<HTMLAnchorElement>('h2 a')
+      const title = link?.textContent?.trim()
+      const href = link?.getAttribute('href')?.trim()
+      const desc = el.querySelector<HTMLParagraphElement>('p')?.textContent?.trim() || ''
+      if (title && href) {
+        items.push({ title, url: href, description: desc, position: idx + 1 })
+      }
+    })
+    return items
   })
 
-  if (res.statusCode >= 400) {
-    const text = await res.body.text()
-    throw new Error(`browser.cash upstream ${res.statusCode}: ${text}`)
-  }
+  return results.slice(0, count)
+}
 
-  const json = await res.body.json()
-  // TODO: parse actual SERP payload from your runner; returning placeholder shape.
-  return json
+// Dispatch a search by:
+// 1) creating a Browser.cash session
+// 2) waiting for CDP to be ready
+// 3) connecting via CDP and fetching a SERP (Bing)
+// 4) cleaning up the session
+export async function dispatchBrowserQuery(params: SearchParams) {
+  const session = await createSession()
+  const sessionId = session.sessionId
+  let browser: any | null = null
+
+  try {
+    const activeSession = await waitForActiveSession(sessionId)
+    if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
+
+    browser = await chromium.connectOverCDP(activeSession.cdpUrl)
+    const context = browser.contexts()[0] || (await browser.newContext())
+    const page = context.pages()[0] || (await context.newPage())
+
+    const results = await runBingSearch(page, params)
+    await browser.close().catch(() => {})
+    browser = null
+    return { results }
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {})
+    }
+    await stopSession(sessionId)
+  }
 }

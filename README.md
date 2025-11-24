@@ -34,7 +34,7 @@ curl -X POST http://localhost:8080/api/v1/search \
 
 ## Env
 - `BROWSER_CASH_API_KEY` (required)
-- `BROWSER_CASH_BASE` (optional, default `https://browser-api.browser.cash`)
+- `BROWSER_CASH_BASE` (optional, default `https://api.browser.cash`)
 - `PORT` (default 8080)
 - `RATE_LIMIT_MAX` (default 10 req/window)
 - `RATE_LIMIT_TIME_WINDOW` (default `1 minute`)
