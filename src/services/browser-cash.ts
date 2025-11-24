@@ -1,6 +1,8 @@
 import { chromium } from 'patchright-core'
 import { request } from 'undici'
 import { loadEnvString } from '../lib/env.js'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const BROWSER_CASH_API_KEY = loadEnvString('BROWSER_CASH_API_KEY')
 // Public API host that fronts browser + agent endpoints.
@@ -72,6 +74,78 @@ async function waitForActiveSession(sessionId: string, timeoutMs = 20_000): Prom
   throw new Error(`Timed out waiting for session ${sessionId} to become active`)
 }
 
+const DUMP_HTML = true
+function dumpHtml(html: string, label: string) {
+  if (!DUMP_HTML) return
+  try {
+    const outPath = path.join(process.cwd(), `serp-debug-${label}.html`)
+    fs.writeFileSync(outPath, html, 'utf8')
+    console.log(`[serp-debug] wrote ${outPath} (${html.length} bytes)`)
+  } catch (err) {
+    console.error('[serp-debug] failed to write html dump', err)
+  }
+}
+
+async function runGoogleSearch(page: any, params: SearchParams): Promise<{ results: any[]; blocked: boolean }> {
+  const count = Math.min(Math.max(params.count ?? 10, 1), 20)
+  const hl = params.search_lang || 'en'
+  const gl = params.country ? params.country.toLowerCase() : undefined
+  const query = encodeURIComponent(params.q)
+  const baseUrl = `https://www.google.com/search?q=${query}&num=${count}&hl=${encodeURIComponent(hl)}${gl ? `&gl=${encodeURIComponent(gl)}` : ''}&safe=off`
+
+  // Bias Google toward the classic HTML layout and English responses.
+  try {
+    await page.context().setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+    })
+  } catch {
+    // ignore header set failures
+  }
+
+  const parseResults = async (): Promise<{ title: string; url: string; description: string; position: number }[]> => {
+    return await page.evaluate(() => {
+      const items: { title: string; url: string; description: string; position: number }[] = []
+      const nodes = Array.from(document.querySelectorAll<HTMLDivElement>('div#search div.g, div.g'))
+      nodes.forEach((el, idx) => {
+        const link = el.querySelector<HTMLAnchorElement>('a')
+        const title = el.querySelector<HTMLHeadingElement>('h3')?.textContent?.trim()
+        const href = link?.href?.trim()
+        const desc =
+          el.querySelector<HTMLElement>('div.VwiC3b')?.textContent?.trim() ||
+          el.querySelector<HTMLElement>('span.aCOpRe')?.textContent?.trim() ||
+          ''
+        if (title && href && href.startsWith('http')) {
+          items.push({ title, url: href, description: desc, position: idx + 1 })
+        }
+      })
+      return items
+    })
+  }
+
+  const fetchAndParse = async (url: string, tag: string) => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+    await page.waitForSelector('div#search', { timeout: 8_000 }).catch(() => {})
+    const html = await page.content().catch(() => '')
+    if (html) dumpHtml(html, tag)
+    return parseResults()
+  }
+
+  let results = await fetchAndParse(baseUrl, 'google-base')
+  let lastHtml = await page.content().catch(() => '')
+
+  // Fallback to simplified HTML view if nothing came back (e.g., consent page/JS blocked)
+  if (!results.length) {
+    const fallbackUrl = `${baseUrl}&gbv=1`
+    results = await fetchAndParse(fallbackUrl, 'google-fallback')
+    lastHtml = await page.content().catch(() => lastHtml)
+  }
+
+  // If still empty and we hit a CAPTCHA/blocked page, we'll signal upstream to try Bing
+  const blocked = (!results.length) && /captcha-form|recaptcha|unusual traffic/i.test(lastHtml || '')
+
+  return { results: results.slice(0, count), blocked }
+}
+
 async function runBingSearch(page: any, params: SearchParams) {
   const count = Math.min(Math.max(params.count ?? 10, 1), 20)
   const locale = params.search_lang && params.country ? `${params.search_lang}-${params.country}` : params.search_lang || 'en-US'
@@ -80,6 +154,8 @@ async function runBingSearch(page: any, params: SearchParams) {
 
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
   await page.waitForSelector('li.b_algo h2 a', { timeout: 10_000 }).catch(() => {})
+  const html = await page.content().catch(() => '')
+  if (html) dumpHtml(html, 'bing')
 
   const results = await page.evaluate(() => {
     const items: { title: string; url: string; description: string; position: number }[] = []
@@ -88,7 +164,7 @@ async function runBingSearch(page: any, params: SearchParams) {
       const title = link?.textContent?.trim()
       const href = link?.getAttribute('href')?.trim()
       const desc = el.querySelector<HTMLParagraphElement>('p')?.textContent?.trim() || ''
-      if (title && href) {
+      if (title && href && href.startsWith('http')) {
         items.push({ title, url: href, description: desc, position: idx + 1 })
       }
     })
@@ -101,7 +177,7 @@ async function runBingSearch(page: any, params: SearchParams) {
 // Dispatch a search by:
 // 1) creating a Browser.cash session
 // 2) waiting for CDP to be ready
-// 3) connecting via CDP and fetching a SERP (Bing)
+// 3) connecting via CDP and fetching a Google SERP (falls back to Bing on block)
 // 4) cleaning up the session
 export async function dispatchBrowserQuery(params: SearchParams) {
   const session = await createSession()
@@ -116,7 +192,12 @@ export async function dispatchBrowserQuery(params: SearchParams) {
     const context = browser.contexts()[0] || (await browser.newContext())
     const page = context.pages()[0] || (await context.newPage())
 
-    const results = await runBingSearch(page, params)
+    // Prefer Bing (more stable) and fall back to Google if empty
+    let results = await runBingSearch(page, params)
+    if (!results || !results.length) {
+      const g = await runGoogleSearch(page, params)
+      if (g.results?.length) results = g.results
+    }
     await browser.close().catch(() => {})
     browser = null
     return { results }
