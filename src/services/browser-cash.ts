@@ -10,6 +10,8 @@ const BROWSER_CASH_API_KEY = loadEnvString('BROWSER_CASH_API_KEY')
 const BROWSER_CASH_BASE = loadEnvString('BROWSER_CASH_BASE', 'https://api.browser.cash')
 const DEBUG_HTML = process.env.SERP_DEBUG_HTML === '1' || process.env.SERP_DEBUG_HTML === 'true'
 const DEBUG_LOG = process.env.SERP_DEBUG_LOG === '1' || process.env.SERP_DEBUG_LOG === 'true'
+const PARSER_MODE = (process.env.SERP_PARSER_MODE || 'llm').toLowerCase()
+const USE_LLM = PARSER_MODE !== 'dom'
 
 export type SerpClient = {
   init(): Promise<void>
@@ -17,7 +19,7 @@ export type SerpClient = {
   shutdown(): Promise<void>
 }
 
-type SearchParams = {
+export type SearchParams = {
   q: string
   country?: string
   search_lang?: string
@@ -35,7 +37,7 @@ type SessionResponse = {
   cdpUrl?: string | null
 }
 
-type ConnectedSession = {
+export type ConnectedSession = {
   sessionId: string
   browser: any
   page: any
@@ -115,12 +117,57 @@ function extractJsonArray(text: string): any[] | null {
   return null;
 }
 
+export async function parseDomResults(page: any, params: SearchParams): Promise<{ title: string; url: string; description: string; position: number }[]> {
+  const max = Math.min(Math.max(params.count ?? 10, 1), 20)
+  const domExtractor = `
+    const uniq = new Set();
+    const candidates = [
+      ...document.querySelectorAll('div#search div.g'),
+      ...document.querySelectorAll('div#search div[data-header-feature="0"]'),
+      ...document.querySelectorAll('div#rso > div'),
+    ];
+    candidates.forEach((el) => uniq.add(el));
+
+    const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+    const list = [];
+
+    for (const block of Array.from(uniq)) {
+      const link = block.querySelector('a[href]');
+      const titleEl = block.querySelector('h3');
+      if (!link || !titleEl) continue;
+      const href = link.getAttribute('href') || '';
+      if (!href.startsWith('http')) continue;
+
+      const title = clean(titleEl.textContent);
+      if (!title) continue;
+
+      const descEl =
+        block.querySelector('div[data-sncf], div[data-snf], div[data-content-feature], .VwiC3b, div[role="text"], div.MUxGbd') ||
+        block.querySelector('span');
+      const description = clean((descEl && (descEl.innerText || descEl.textContent)) || '');
+
+      list.push({ title, url: href, description });
+      if (list.length >= limit) break;
+    }
+
+    return list.map((r, idx) => ({ ...r, position: idx + 1 }));
+  `
+
+  const results = await page.evaluate(({ script, limit }: { script: string; limit: number }) => {
+    const fn = new Function('limit', script)
+    return fn(limit)
+  }, { script: domExtractor, limit: max })
+
+  return results
+}
+
 async function runGoogleSearch(page: any, params: SearchParams): Promise<{ results: any[]; blocked: boolean }> {
   const count = Math.min(Math.max(params.count ?? 10, 1), 20)
   const hl = params.search_lang || 'en'
   const gl = params.country ? params.country.toLowerCase() : undefined
   const query = encodeURIComponent(params.q)
   const baseUrl = `https://www.google.com/search?q=${query}&num=${count}&hl=${encodeURIComponent(hl)}${gl ? `&gl=${encodeURIComponent(gl)}` : ''}&safe=off`
+  if (DEBUG_LOG) console.log('[serp] parser mode', PARSER_MODE)
 
   // Bias Google toward the classic HTML layout and English responses.
   try {
@@ -131,11 +178,9 @@ async function runGoogleSearch(page: any, params: SearchParams): Promise<{ resul
     // ignore header set failures
   }
 
-  const parseResults = async (): Promise<{ title: string; url: string; description: string; position: number }[]> => {
+  const parseWithLlm = async (html: string): Promise<{ title: string; url: string; description: string; position: number }[]> => {
+    if (!html) return []
     // Capture HTML and offload parsing to OpenRouter to be resilient to DOM tweaks
-    const html = await page.content().catch(() => '')
-    if (html) dumpHtml(html, 'google-parsed')
-
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) {
       console.error('[serp-parser] OPENROUTER_API_KEY not set; returning empty results')
@@ -224,12 +269,21 @@ If no results are found, still return the object with an empty array and a reaso
     return []
   }
 
+  const parseResults = async (html: string): Promise<{ title: string; url: string; description: string; position: number }[]> => {
+    if (!USE_LLM) {
+      const dom = await parseDomResults(page, params)
+      if (DEBUG_LOG) console.log('[serp-parser] dom mode results', dom.length)
+      return dom
+    }
+    return parseWithLlm(html)
+  }
+
   const fetchAndParse = async (url: string, tag: string) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
     await page.waitForSelector('div#search', { timeout: 8_000 }).catch(() => {})
     const html = await page.content().catch(() => '')
     if (html) dumpHtml(html, tag)
-    return parseResults()
+    return parseResults(html)
   }
 
   let results = await fetchAndParse(baseUrl, 'google-base')
@@ -248,7 +302,7 @@ If no results are found, still return the object with an empty array and a reaso
   return { results: results.slice(0, count), blocked }
 }
 
-async function createConnectedSession(): Promise<ConnectedSession> {
+export async function createConnectedSession(): Promise<ConnectedSession> {
   const session = await createSession()
   const activeSession = await waitForActiveSession(session.sessionId)
   if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
@@ -259,7 +313,7 @@ async function createConnectedSession(): Promise<ConnectedSession> {
   return { sessionId: session.sessionId, browser, page }
 }
 
-async function closeConnectedSession(session: ConnectedSession | null) {
+export async function closeConnectedSession(session: ConnectedSession | null) {
   if (!session) return
   try {
     await session.browser.close().catch(() => {})
