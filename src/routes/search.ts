@@ -15,7 +15,6 @@ const searchSchema = z.object({
 export async function searchRoute(app: FastifyInstance) {
   app.post('/search', async (req, reply) => {
     const start = Date.now()
-    console.log('[search] incoming', { body: req.body })
     const parsed = searchSchema.safeParse(req.body ?? {})
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid_request', details: parsed.error.flatten() })
@@ -24,7 +23,6 @@ export async function searchRoute(app: FastifyInstance) {
 
     try {
       const rawResults = await dispatchBrowserQuery(params)
-      console.log('[search] rawResults', rawResults)
       const response = rankAndFormat(params, rawResults)
       console.log('[search] done', { ms: Date.now() - start, results: rawResults?.results?.length })
       return reply.send(response)

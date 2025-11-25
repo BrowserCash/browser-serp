@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import Fastify from 'fastify'
-import rateLimit from '@fastify/rate-limit'
+import rateLimit, { type RateLimitPluginOptions } from '@fastify/rate-limit'
 import { searchRoute } from './routes/search.js'
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './lib/env.js'
 
@@ -17,7 +17,7 @@ async function buildServer() {
   await app.register(rateLimit, {
     max: RATE_LIMIT_MAX,
     timeWindow: RATE_LIMIT_WINDOW,
-  })
+  } as RateLimitPluginOptions)
 
   app.addHook('onRequest', async (req, reply) => {
     const origin = req.headers.origin

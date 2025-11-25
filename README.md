@@ -1,48 +1,44 @@
-# Browsercrawl SERP API (MVP scaffold)
+# Browsercrawl SERP API
 
-This folder is a starter for a SERP API that fronts Browser.cash. It includes:
-
-- A Fastify server with `/api/v1/search`
-- Env plumbing and rate limiting
-- Stubs for Browser.cash dispatch + result formatting
-- Example request schema matching the outline
+Minimal SERP API that fronts Browser.cash using Google results. It spins up a Browser.cash session, drives Google via CDP, and uses an OpenRouter model to parse the SERP into results.
 
 ## Quick start (dev)
 
-```
+```bash
 cd browsercrawl
-cp .env.example .env   # fill BROWSER_CASH_API_KEY (and BROWSER_CASH_BASE if not default)
+cp .env.example .env   # set BROWSER_CASH_API_KEY and OPENROUTER_API_KEY
 npm install
-npm run dev
-# Server runs on http://localhost:8080 (default)
+npm run dev            # runs on http://localhost:8080
 ```
 
-Example request:
-```
+Example:
+```bash
 curl -X POST http://localhost:8080/api/v1/search \
   -H "content-type: application/json" \
   -d '{"q":"browser automation","count":5}'
 ```
 
 ## Project layout
-- `src/index.ts` — Fastify bootstrap, rate limits, CORS, health check.
-- `src/routes/search.ts` — POST `/api/v1/search` with validation and stubbed pipeline.
-- `src/services/browser-cash.ts` — Placeholder call into Browser.cash API (replace with real runner).
-- `src/services/ranking.ts` — Placeholder formatter for SERP response shape.
-- `src/lib/env.ts` — Typed env helpers.
-- `src/types/search.ts` — Shared schema/types for search.
+- `src/index.ts` — Fastify bootstrap, rate limits, CORS, health.
+- `src/routes/search.ts` — POST `/api/v1/search` with validation and pipeline.
+- `src/services/browser-cash.ts` — Browser.cash session + CDP + Google SERP fetch + OpenRouter parse.
+- `src/services/ranking.ts` — Simple formatter for the response shape.
+- `src/lib/env.ts` — Env helpers.
+- `src/types/search.ts` — Schema/types.
 
-## Env
+## Environment
 - `BROWSER_CASH_API_KEY` (required)
+- `OPENROUTER_API_KEY` (required for LLM parsing)
 - `BROWSER_CASH_BASE` (optional, default `https://api.browser.cash`)
+- `SERP_DEBUG_HTML` (optional; set `true` to write debug HTML dumps)
+- `SERP_DEBUG_LOG` (optional; set `true` for verbose LLM parser logs)
 - `PORT` (default 8080)
 - `RATE_LIMIT_MAX` (default 10 req/window)
 - `RATE_LIMIT_TIME_WINDOW` (default `1 minute`)
 - `ALLOWED_ORIGINS` (comma list, `*` allowed)
+- `LOG_LEVEL` (default `info`)
 
-## Next steps
-- Replace `dispatchBrowserQuery` with real Browser.cash session/task flow (navigate, extract SERP features).
-- Implement result extraction + ranking in `ranking.ts`.
-- Add API key auth + tiered rate limits.
-- Add caching layer and logging/metrics.
-- Expand endpoints (`/images`, `/news`, `/videos`, `/local`, `/ai_summary`, etc.).
+## Notes
+- Google only. Results are parsed via the `x-ai/grok-4.1-fast` model on OpenRouter.
+- Debug HTML dumps are disabled by default; enable with `SERP_DEBUG_HTML=true` if needed.
+- No DOM fallback is used; if the LLM returns an empty array, the API returns an empty result set.

@@ -1,4 +1,3 @@
-import type { z } from 'zod'
 import type { inferRouterInputs } from '../types/search.js'
 
 type SearchParams = inferRouterInputs['search']

@@ -10,9 +10,9 @@
     "lint": "echo \"(add a linter)\""
   },
   "dependencies": {
-    "@fastify/rate-limit": "^7.0.0",
-    "dotenv": "^16.4.5",
+    "@fastify/rate-limit": "^8.1.0",
     "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
     "patchright-core": "^1.56.1",
     "undici": "^6.20.1",

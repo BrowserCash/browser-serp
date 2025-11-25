@@ -8,6 +8,8 @@ import axios from 'axios'
 const BROWSER_CASH_API_KEY = loadEnvString('BROWSER_CASH_API_KEY')
 // Public API host that fronts browser + agent endpoints.
 const BROWSER_CASH_BASE = loadEnvString('BROWSER_CASH_BASE', 'https://api.browser.cash')
+const DEBUG_HTML = process.env.SERP_DEBUG_HTML === '1' || process.env.SERP_DEBUG_HTML === 'true'
+const DEBUG_LOG = process.env.SERP_DEBUG_LOG === '1' || process.env.SERP_DEBUG_LOG === 'true'
 
 type SearchParams = {
   q: string
@@ -29,7 +31,7 @@ type SessionResponse = {
 
 async function httpJson<T>(path: string, opts: { method?: string; body?: any; headers?: Record<string, string> } = {}): Promise<T> {
   const res = await request(`${BROWSER_CASH_BASE}${path}`, {
-    method: opts.method || 'GET',
+    method: opts.method as any || 'GET',
     headers: {
       authorization: `Bearer ${BROWSER_CASH_API_KEY}`,
       'content-type': 'application/json',
@@ -75,9 +77,8 @@ async function waitForActiveSession(sessionId: string, timeoutMs = 20_000): Prom
   throw new Error(`Timed out waiting for session ${sessionId} to become active`)
 }
 
-const DUMP_HTML = true
 function dumpHtml(html: string, label: string) {
-  if (!DUMP_HTML) return
+  if (!DEBUG_HTML) return
   try {
     const outPath = path.join(process.cwd(), `serp-debug-${label}.html`)
     fs.writeFileSync(outPath, html, 'utf8')
@@ -164,7 +165,7 @@ If no results are found, still return the object with an empty array and a reaso
         }
       )
       let text = resp.data?.choices?.[0]?.message?.content || '[]'
-      console.log('[serp-parser] raw llm', { len: text.length, preview: text.slice(0, 200) })
+      if (DEBUG_LOG) console.log('[serp-parser] raw llm', { len: text.length, preview: text.slice(0, 200) })
       text = text.trim()
       if (text.startsWith('```')) {
         const parts = text.split('```')
@@ -190,7 +191,7 @@ If no results are found, still return the object with an empty array and a reaso
         }
         reasoning = typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined
       }
-      console.log('[serp-parser] parsed array length', arr ? arr.length : 'null', 'reasoning', reasoning || 'n/a')
+      if (DEBUG_LOG) console.log('[serp-parser] parsed array length', arr ? arr.length : 'null', 'reasoning', reasoning || 'n/a')
       if (arr && Array.isArray(arr)) {
         const out = arr
           .filter((r) => r && typeof r.title === 'string' && typeof r.url === 'string' && r.url.startsWith('http'))
@@ -202,37 +203,13 @@ If no results are found, still return the object with an empty array and a reaso
           }))
         if (out.length) return out
       }
-    } catch (err) {
-      console.error('[serp-parser] openrouter failed', err?.message || err)
+    } catch (err: any) {
+      const msg = typeof err?.message === 'string' ? err.message : String(err || '')
+      console.error('[serp-parser] openrouter failed', msg)
     }
 
-    // Fallback: simple DOM parse if LLM did not return results
-    try {
-      const domResults = await page.$$eval('div.g, div.tF2Cxc, div.MjjYud', (nodes) => {
-        const items: { title: string; url: string; description: string; position: number }[] = []
-        for (const el of nodes as Element[]) {
-          const link = el.querySelector('a')
-          const titleEl = el.querySelector('h3')
-          const href = (link?.getAttribute('href') || link?.getAttribute('data-href') || '').trim()
-          const title = titleEl?.textContent?.trim()
-          if (!title || !href || !href.startsWith('http')) continue
-          const descNode =
-            el.querySelector('div.VwiC3b') ||
-            el.querySelector('span.aCOpRe') ||
-            el.querySelector('div.PV9nzc') ||
-            el.querySelector('div.AP7Wnd') ||
-            el.querySelector('div[data-sncf]') ||
-            el.querySelector('span[data-sncf]')
-          const description = descNode?.textContent?.trim() || ''
-          items.push({ title, url: href, description, position: items.length + 1 })
-        }
-        return items
-      })
-      return domResults
-    } catch (err) {
-      console.error('[serp-parser] dom fallback failed', err?.message || err)
-      return []
-    }
+    // If LLM gave nothing, return empty results
+    return []
   }
 
   const fetchAndParse = async (url: string, tag: string) => {
@@ -266,25 +243,25 @@ If no results are found, still return the object with an empty array and a reaso
 // 4) cleaning up the session
 export async function dispatchBrowserQuery(params: SearchParams) {
   const t0 = Date.now()
-  console.log('[serp] start', { q: params.q, count: params.count, lang: params.search_lang, country: params.country })
+  if (DEBUG_LOG) console.log('[serp] start', { q: params.q, count: params.count, lang: params.search_lang, country: params.country })
   const session = await createSession()
   const sessionId = session.sessionId
-  console.log('[serp] session created', { sessionId })
+  if (DEBUG_LOG) console.log('[serp] session created', { sessionId })
   let browser: any | null = null
 
   try {
     const activeSession = await waitForActiveSession(sessionId)
-    console.log('[serp] session active', { sessionId })
+    if (DEBUG_LOG) console.log('[serp] session active', { sessionId })
     if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
 
     browser = await chromium.connectOverCDP(activeSession.cdpUrl)
     const context = browser.contexts()[0] || (await browser.newContext())
     const page = context.pages()[0] || (await context.newPage())
-    console.log('[serp] connected to cdp', { sessionId })
+    if (DEBUG_LOG) console.log('[serp] connected to cdp', { sessionId })
 
     const g = await runGoogleSearch(page, params)
     const results = g.results
-    console.log('[serp] fetched', { sessionId, results: results?.length, blocked: g.blocked, ms: Date.now() - t0 })
+    if (DEBUG_LOG) console.log('[serp] fetched', { sessionId, results: results?.length, blocked: g.blocked, ms: Date.now() - t0 })
     await browser.close().catch(() => {})
     browser = null
     return { results }
@@ -293,6 +270,6 @@ export async function dispatchBrowserQuery(params: SearchParams) {
       await browser.close().catch(() => {})
     }
     await stopSession(sessionId)
-    console.log('[serp] session closed', { sessionId, ms: Date.now() - t0 })
+    if (DEBUG_LOG) console.log('[serp] session closed', { sessionId, ms: Date.now() - t0 })
   }
 }
