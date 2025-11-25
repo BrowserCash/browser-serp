@@ -134,10 +134,15 @@ async function runGoogleSearch(page: any, params: SearchParams): Promise<{ resul
 You are a DOM parser. Extract up to ${params.count} web search results from the HTML of a Google SERP.
 For each result, return: title, url, description, position (starting at 1).
 Ignore non-result cards (people also ask, images, videos).
-Return ONLY a valid JSON array (no markdown fences, no prose), e.g.:
-[
-  {"title":"...","url":"https://...","description":"...","position":1}
-]`
+Always respond with valid JSON (no markdown fences). Use this shape:
+{
+  "reasoning": "<brief reasoning of how you parsed the page>",
+  "results": [
+    {"title":"...","url":"https://...","description":"...","position":1},
+    ...
+  ]
+}
+If no results are found, still return the object with an empty array and a reasoning string.`
 
         const resp = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
@@ -145,7 +150,7 @@ Return ONLY a valid JSON array (no markdown fences, no prose), e.g.:
             model: 'x-ai/grok-4.1-fast',
             messages: [
               { role: 'system', content: 'You extract structured search results from HTML.' },
-              { role: 'user', content: `${prompt}\n\nHTML:\n${html.slice(0, 15000)}` },
+              { role: 'user', content: `${prompt}\n\nHTML (full):\n${html}` },
             ],
             max_tokens: 1200,
           temperature: 0,
@@ -159,6 +164,7 @@ Return ONLY a valid JSON array (no markdown fences, no prose), e.g.:
         }
       )
       let text = resp.data?.choices?.[0]?.message?.content || '[]'
+      console.log('[serp-parser] raw llm', { len: text.length, preview: text.slice(0, 200) })
       text = text.trim()
       if (text.startsWith('```')) {
         const parts = text.split('```')
@@ -167,25 +173,66 @@ Return ONLY a valid JSON array (no markdown fences, no prose), e.g.:
           if (text.startsWith('json')) text = text.slice(4).trim()
         }
       }
-      const parsedArr = extractJsonArray(text)
-      if (parsedArr && Array.isArray(parsedArr)) {
-        return parsedArr
-          .filter(
-            (r) => r && typeof r.title === 'string' && typeof r.url === 'string' && r.url.startsWith('http')
-          )
+      let parsed: any = null
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        const arr = extractJsonArray(text)
+        if (arr) parsed = { results: arr }
+      }
+      let reasoning: string | undefined
+      let arr: any[] | undefined
+      if (parsed) {
+        if (Array.isArray(parsed)) {
+          arr = parsed
+        } else if (Array.isArray(parsed.results)) {
+          arr = parsed.results
+        }
+        reasoning = typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined
+      }
+      console.log('[serp-parser] parsed array length', arr ? arr.length : 'null', 'reasoning', reasoning || 'n/a')
+      if (arr && Array.isArray(arr)) {
+        const out = arr
+          .filter((r) => r && typeof r.title === 'string' && typeof r.url === 'string' && r.url.startsWith('http'))
           .map((r, idx) => ({
             title: String(r.title).trim(),
             url: String(r.url).trim(),
             description: String(r.description || '').trim(),
             position: Number(r.position) > 0 ? Number(r.position) : idx + 1,
           }))
+        if (out.length) return out
       }
     } catch (err) {
       console.error('[serp-parser] openrouter failed', err?.message || err)
     }
 
-    // If nothing parsed, return empty
-    return []
+    // Fallback: simple DOM parse if LLM did not return results
+    try {
+      const domResults = await page.$$eval('div.g, div.tF2Cxc, div.MjjYud', (nodes) => {
+        const items: { title: string; url: string; description: string; position: number }[] = []
+        for (const el of nodes as Element[]) {
+          const link = el.querySelector('a')
+          const titleEl = el.querySelector('h3')
+          const href = (link?.getAttribute('href') || link?.getAttribute('data-href') || '').trim()
+          const title = titleEl?.textContent?.trim()
+          if (!title || !href || !href.startsWith('http')) continue
+          const descNode =
+            el.querySelector('div.VwiC3b') ||
+            el.querySelector('span.aCOpRe') ||
+            el.querySelector('div.PV9nzc') ||
+            el.querySelector('div.AP7Wnd') ||
+            el.querySelector('div[data-sncf]') ||
+            el.querySelector('span[data-sncf]')
+          const description = descNode?.textContent?.trim() || ''
+          items.push({ title, url: href, description, position: items.length + 1 })
+        }
+        return items
+      })
+      return domResults
+    } catch (err) {
+      console.error('[serp-parser] dom fallback failed', err?.message || err)
+      return []
+    }
   }
 
   const fetchAndParse = async (url: string, tag: string) => {
