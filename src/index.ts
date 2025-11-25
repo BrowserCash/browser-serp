@@ -3,16 +3,21 @@ import Fastify from 'fastify'
 import rateLimit, { type RateLimitPluginOptions } from '@fastify/rate-limit'
 import { searchRoute } from './routes/search.js'
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './lib/env.js'
+import { createSerpClient } from './services/browser-cash.js'
 
 const PORT = loadEnvNumber('PORT', 8080)
 const RATE_LIMIT_MAX = loadEnvNumber('RATE_LIMIT_MAX', 10)
 const RATE_LIMIT_WINDOW = loadEnvString('RATE_LIMIT_TIME_WINDOW', '1 minute')
 const ALLOWED_ORIGINS = loadEnvStringList('ALLOWED_ORIGINS', ['*'])
+const PERSISTENT_SESSION = process.env.SERP_PERSISTENT_SESSION === '1' || process.env.SERP_PERSISTENT_SESSION === 'true'
 
 async function buildServer() {
   const app = Fastify({
     logger: { level: loadEnvString('LOG_LEVEL', 'info') },
   })
+
+  const serpClient = createSerpClient({ persistent: PERSISTENT_SESSION })
+  await serpClient.init()
 
   await app.register(rateLimit, {
     max: RATE_LIMIT_MAX,
@@ -30,7 +35,11 @@ async function buildServer() {
   })
 
   app.get('/health', async () => ({ ok: true }))
-  app.register(searchRoute, { prefix: '/api/v1' })
+  app.register(searchRoute, { prefix: '/api/v1', serpClient })
+
+  app.addHook('onClose', async () => {
+    await serpClient.shutdown()
+  })
 
   return app
 }

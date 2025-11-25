@@ -11,6 +11,12 @@ const BROWSER_CASH_BASE = loadEnvString('BROWSER_CASH_BASE', 'https://api.browse
 const DEBUG_HTML = process.env.SERP_DEBUG_HTML === '1' || process.env.SERP_DEBUG_HTML === 'true'
 const DEBUG_LOG = process.env.SERP_DEBUG_LOG === '1' || process.env.SERP_DEBUG_LOG === 'true'
 
+export type SerpClient = {
+  init(): Promise<void>
+  search(params: SearchParams): Promise<{ results: any[] }>
+  shutdown(): Promise<void>
+}
+
 type SearchParams = {
   q: string
   country?: string
@@ -27,6 +33,12 @@ type SessionResponse = {
   createdAt?: string
   stoppedAt?: string | null
   cdpUrl?: string | null
+}
+
+type ConnectedSession = {
+  sessionId: string
+  browser: any
+  page: any
 }
 
 async function httpJson<T>(path: string, opts: { method?: string; body?: any; headers?: Record<string, string> } = {}): Promise<T> {
@@ -236,6 +248,72 @@ If no results are found, still return the object with an empty array and a reaso
   return { results: results.slice(0, count), blocked }
 }
 
+async function createConnectedSession(): Promise<ConnectedSession> {
+  const session = await createSession()
+  const activeSession = await waitForActiveSession(session.sessionId)
+  if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
+
+  const browser = await chromium.connectOverCDP(activeSession.cdpUrl)
+  const context = browser.contexts()[0] || (await browser.newContext())
+  const page = context.pages()[0] || (await context.newPage())
+  return { sessionId: session.sessionId, browser, page }
+}
+
+async function closeConnectedSession(session: ConnectedSession | null) {
+  if (!session) return
+  try {
+    await session.browser.close().catch(() => {})
+  } finally {
+    await stopSession(session.sessionId)
+  }
+}
+
+function isPageUsable(page: any) {
+  if (!page) return false
+  if (typeof page.isClosed === 'function') return !page.isClosed()
+  return true
+}
+
+class PersistentSerpClient implements SerpClient {
+  private session: ConnectedSession | null = null
+  private tail: Promise<any> = Promise.resolve()
+
+  async init(): Promise<void> {
+    await this.ensureSession()
+  }
+
+  private async ensureSession() {
+    if (this.session && isPageUsable(this.session.page)) return
+    await closeConnectedSession(this.session)
+    this.session = await createConnectedSession()
+  }
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(fn)
+    this.tail = run.then(() => {}, () => {})
+    return run
+  }
+
+  async search(params: SearchParams): Promise<{ results: any[] }> {
+    return this.enqueue(async () => {
+      await this.ensureSession()
+      try {
+        const g = await runGoogleSearch(this.session!.page, params)
+        return { results: g.results }
+      } catch (err) {
+        await closeConnectedSession(this.session)
+        this.session = null
+        throw err
+      }
+    })
+  }
+
+  async shutdown(): Promise<void> {
+    await closeConnectedSession(this.session)
+    this.session = null
+  }
+}
+
 // Dispatch a search by:
 // 1) creating a Browser.cash session
 // 2) waiting for CDP to be ready
@@ -244,32 +322,27 @@ If no results are found, still return the object with an empty array and a reaso
 export async function dispatchBrowserQuery(params: SearchParams) {
   const t0 = Date.now()
   if (DEBUG_LOG) console.log('[serp] start', { q: params.q, count: params.count, lang: params.search_lang, country: params.country })
-  const session = await createSession()
+  const session = await createConnectedSession()
   const sessionId = session.sessionId
   if (DEBUG_LOG) console.log('[serp] session created', { sessionId })
-  let browser: any | null = null
 
   try {
-    const activeSession = await waitForActiveSession(sessionId)
-    if (DEBUG_LOG) console.log('[serp] session active', { sessionId })
-    if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
-
-    browser = await chromium.connectOverCDP(activeSession.cdpUrl)
-    const context = browser.contexts()[0] || (await browser.newContext())
-    const page = context.pages()[0] || (await context.newPage())
-    if (DEBUG_LOG) console.log('[serp] connected to cdp', { sessionId })
-
-    const g = await runGoogleSearch(page, params)
+    const g = await runGoogleSearch(session.page, params)
     const results = g.results
     if (DEBUG_LOG) console.log('[serp] fetched', { sessionId, results: results?.length, blocked: g.blocked, ms: Date.now() - t0 })
-    await browser.close().catch(() => {})
-    browser = null
     return { results }
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {})
-    }
-    await stopSession(sessionId)
+    await closeConnectedSession(session)
     if (DEBUG_LOG) console.log('[serp] session closed', { sessionId, ms: Date.now() - t0 })
+  }
+}
+
+export function createSerpClient(options: { persistent?: boolean } = {}): SerpClient {
+  if (options.persistent) return new PersistentSerpClient()
+
+  return {
+    init: async () => {},
+    search: dispatchBrowserQuery,
+    shutdown: async () => {},
   }
 }

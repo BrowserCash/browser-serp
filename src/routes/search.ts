@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { dispatchBrowserQuery } from '../services/browser-cash.js'
 import { rankAndFormat } from '../services/ranking.js'
+import type { SerpClient } from '../services/browser-cash.js'
 
 const searchSchema = z.object({
   q: z.string().min(1),
@@ -12,7 +12,7 @@ const searchSchema = z.object({
   safesearch: z.enum(['off', 'moderate', 'strict']).optional(),
 })
 
-export async function searchRoute(app: FastifyInstance) {
+export async function searchRoute(app: FastifyInstance, opts: { serpClient: SerpClient }) {
   app.post('/search', async (req, reply) => {
     const start = Date.now()
     const parsed = searchSchema.safeParse(req.body ?? {})
@@ -22,7 +22,7 @@ export async function searchRoute(app: FastifyInstance) {
     const params = parsed.data
 
     try {
-      const rawResults = await dispatchBrowserQuery(params)
+      const rawResults = await opts.serpClient.search(params)
       const response = rankAndFormat(params, rawResults)
       console.log('[search] done', { ms: Date.now() - start, results: rawResults?.results?.length })
       return reply.send(response)

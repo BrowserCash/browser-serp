@@ -32,6 +32,7 @@ curl -X POST http://localhost:8080/api/v1/search \
 - `BROWSER_CASH_BASE` (optional, default `https://api.browser.cash`)
 - `SERP_DEBUG_HTML` (optional; set `true` to write debug HTML dumps)
 - `SERP_DEBUG_LOG` (optional; set `true` for verbose LLM parser logs)
+- `SERP_PERSISTENT_SESSION` (optional; set `true` to create one Browser.cash session on boot and reuse it — requests are serialized)
 - `PORT` (default 8080)
 - `RATE_LIMIT_MAX` (default 10 req/window)
 - `RATE_LIMIT_TIME_WINDOW` (default `1 minute`)
