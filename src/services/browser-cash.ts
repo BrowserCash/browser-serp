@@ -3,6 +3,7 @@ import { request } from 'undici'
 import { loadEnvString } from '../lib/env.js'
 import fs from 'node:fs'
 import path from 'node:path'
+import axios from 'axios'
 
 const BROWSER_CASH_API_KEY = loadEnvString('BROWSER_CASH_API_KEY')
 // Public API host that fronts browser + agent endpoints.
@@ -103,21 +104,122 @@ async function runGoogleSearch(page: any, params: SearchParams): Promise<{ resul
   }
 
   const parseResults = async (): Promise<{ title: string; url: string; description: string; position: number }[]> => {
+    // Capture HTML and offload parsing to OpenRouter to be resilient to DOM tweaks
+    const html = await page.content().catch(() => '')
+    if (html) dumpHtml(html, 'google-parsed')
+
+    const apiKey = process.env.OPENROUTER_API_KEY
+    if (!apiKey) {
+      // Fallback to DOM parsing if no key
+      return await page.evaluate(() => {
+        const items: { title: string; url: string; description: string; position: number }[] = []
+        const candidates = Array.from(document.querySelectorAll<HTMLDivElement>('div.g, div.tF2Cxc, div.MjjYud'))
+        const extractDesc = (root: Element | null) => {
+          if (!root) return ''
+          const descNode =
+            root.querySelector<HTMLElement>('div.VwiC3b') ||
+            root.querySelector<HTMLElement>('span.aCOpRe') ||
+            root.querySelector<HTMLElement>('div.PV9nzc') ||
+            root.querySelector<HTMLElement>('div.AP7Wnd') ||
+            root.querySelector<HTMLElement>('div[data-sncf]') ||
+            root.querySelector<HTMLElement>('span[data-sncf]')
+          return descNode?.textContent?.trim() || ''
+        }
+        candidates.forEach((el) => {
+          const link = el.querySelector<HTMLAnchorElement>('a')
+          const titleEl = el.querySelector<HTMLHeadingElement>('h3')
+          const href = link?.href?.trim()
+          const title = titleEl?.textContent?.trim()
+          if (!title || !href || !href.startsWith('http')) return
+          const desc = extractDesc(el)
+          items.push({ title, url: href, description: desc, position: items.length + 1 })
+        })
+        return items
+      })
+    }
+
+    try {
+      const prompt = `
+You are a DOM parser. Extract up to ${params.count} web search results from the HTML of a Google SERP.
+For each result, return: title, url, description, position (starting at 1).
+Ignore non-result cards (people also ask, images, videos).
+Return a JSON array.`
+
+      const resp = await axios.post(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You extract structured search results from HTML.' },
+            { role: 'user', content: `${prompt}\n\nHTML:\n${html.slice(0, 18000)}` },
+          ],
+          max_tokens: 1200,
+          temperature: 0,
+          },
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 15000,
+        }
+      )
+      let text = resp.data?.choices?.[0]?.message?.content || '[]'
+      // Strip markdown fences if present
+      text = text.trim()
+      if (text.startsWith('```')) {
+        const firstFence = text.indexOf('```')
+        const secondFence = text.indexOf('```', firstFence + 3)
+        if (secondFence > firstFence) {
+          text = text.slice(firstFence + 3, secondFence).trim()
+          if (text.startsWith('json')) {
+            text = text.slice(4).trim()
+          }
+        }
+      }
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter(
+            (r) => r && typeof r.title === 'string' && typeof r.url === 'string' && r.url.startsWith('http')
+          )
+          .map((r, idx) => ({
+            title: String(r.title).trim(),
+            url: String(r.url).trim(),
+            description: String(r.description || '').trim(),
+            position: Number(r.position) > 0 ? Number(r.position) : idx + 1,
+          }))
+      }
+    } catch (err) {
+      console.error('[serp-parser] openrouter failed, falling back to DOM parse', err?.message || err)
+    }
+
+    // Fallback to DOM parse on errors
     return await page.evaluate(() => {
       const items: { title: string; url: string; description: string; position: number }[] = []
-      const nodes = Array.from(document.querySelectorAll<HTMLDivElement>('div#search div.g, div.g'))
-      nodes.forEach((el, idx) => {
+      const candidates = Array.from(document.querySelectorAll<HTMLDivElement>('div.g, div.tF2Cxc, div.MjjYud'))
+
+      function extractDesc(root: Element | null): string {
+        if (!root) return ''
+        const descNode =
+          root.querySelector<HTMLElement>('div.VwiC3b') ||
+          root.querySelector<HTMLElement>('span.aCOpRe') ||
+          root.querySelector<HTMLElement>('div.PV9nzc') ||
+          root.querySelector<HTMLElement>('div.AP7Wnd') ||
+          root.querySelector<HTMLElement>('div[data-sncf]') ||
+          root.querySelector<HTMLElement>('span[data-sncf]')
+        return descNode?.textContent?.trim() || ''
+      }
+
+      for (const el of candidates) {
         const link = el.querySelector<HTMLAnchorElement>('a')
-        const title = el.querySelector<HTMLHeadingElement>('h3')?.textContent?.trim()
+        const titleEl = el.querySelector<HTMLHeadingElement>('h3')
         const href = link?.href?.trim()
-        const desc =
-          el.querySelector<HTMLElement>('div.VwiC3b')?.textContent?.trim() ||
-          el.querySelector<HTMLElement>('span.aCOpRe')?.textContent?.trim() ||
-          ''
-        if (title && href && href.startsWith('http')) {
-          items.push({ title, url: href, description: desc, position: idx + 1 })
-        }
-      })
+        const title = titleEl?.textContent?.trim()
+        if (!title || !href || !href.startsWith('http')) continue
+        const desc = extractDesc(el)
+        items.push({ title, url: href, description: desc, position: items.length + 1 })
+      }
       return items
     })
   }
@@ -140,44 +242,16 @@ async function runGoogleSearch(page: any, params: SearchParams): Promise<{ resul
     lastHtml = await page.content().catch(() => lastHtml)
   }
 
-  // If still empty and we hit a CAPTCHA/blocked page, we'll signal upstream to try Bing
+  // If still empty and we hit a CAPTCHA/blocked page, we'll flag it
   const blocked = (!results.length) && /captcha-form|recaptcha|unusual traffic/i.test(lastHtml || '')
 
   return { results: results.slice(0, count), blocked }
 }
 
-async function runBingSearch(page: any, params: SearchParams) {
-  const count = Math.min(Math.max(params.count ?? 10, 1), 20)
-  const locale = params.search_lang && params.country ? `${params.search_lang}-${params.country}` : params.search_lang || 'en-US'
-  const query = encodeURIComponent(params.q)
-  const searchUrl = `https://www.bing.com/search?q=${query}&count=${count}&setlang=${encodeURIComponent(locale)}`
-
-  await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
-  await page.waitForSelector('li.b_algo h2 a', { timeout: 10_000 }).catch(() => {})
-  const html = await page.content().catch(() => '')
-  if (html) dumpHtml(html, 'bing')
-
-  const results = await page.evaluate(() => {
-    const items: { title: string; url: string; description: string; position: number }[] = []
-    document.querySelectorAll<HTMLLIElement>('li.b_algo').forEach((el, idx) => {
-      const link = el.querySelector<HTMLAnchorElement>('h2 a')
-      const title = link?.textContent?.trim()
-      const href = link?.getAttribute('href')?.trim()
-      const desc = el.querySelector<HTMLParagraphElement>('p')?.textContent?.trim() || ''
-      if (title && href && href.startsWith('http')) {
-        items.push({ title, url: href, description: desc, position: idx + 1 })
-      }
-    })
-    return items
-  })
-
-  return results.slice(0, count)
-}
-
 // Dispatch a search by:
 // 1) creating a Browser.cash session
 // 2) waiting for CDP to be ready
-// 3) connecting via CDP and fetching a Google SERP (falls back to Bing on block)
+// 3) connecting via CDP and fetching a Google SERP
 // 4) cleaning up the session
 export async function dispatchBrowserQuery(params: SearchParams) {
   const session = await createSession()
@@ -192,12 +266,8 @@ export async function dispatchBrowserQuery(params: SearchParams) {
     const context = browser.contexts()[0] || (await browser.newContext())
     const page = context.pages()[0] || (await context.newPage())
 
-    // Prefer Bing (more stable) and fall back to Google if empty
-    let results = await runBingSearch(page, params)
-    if (!results || !results.length) {
-      const g = await runGoogleSearch(page, params)
-      if (g.results?.length) results = g.results
-    }
+    const g = await runGoogleSearch(page, params)
+    const results = g.results
     await browser.close().catch(() => {})
     browser = null
     return { results }

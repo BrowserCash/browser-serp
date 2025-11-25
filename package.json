@@ -12,6 +12,7 @@
   "dependencies": {
     "@fastify/rate-limit": "^7.0.0",
     "dotenv": "^16.4.5",
+    "axios": "^1.7.7",
     "fastify": "^4.28.1",
     "patchright-core": "^1.56.1",
     "undici": "^6.20.1",
