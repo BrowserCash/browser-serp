@@ -7,7 +7,6 @@ import { createSerpClient } from './services/browser-cash.js'
 
 const PORT = loadEnvNumber('PORT', 8080)
 const RATE_LIMIT_MAX = loadEnvNumber('RATE_LIMIT_MAX', 10)
-const RATE_LIMIT_WINDOW = loadEnvString('RATE_LIMIT_TIME_WINDOW', '1 minute')
 const ALLOWED_ORIGINS = loadEnvStringList('ALLOWED_ORIGINS', ['*'])
 const PERSISTENT_SESSION = process.env.SERP_PERSISTENT_SESSION === '1' || process.env.SERP_PERSISTENT_SESSION === 'true'
 
@@ -21,7 +20,7 @@ async function buildServer() {
 
   await app.register(rateLimit, {
     max: RATE_LIMIT_MAX,
-    timeWindow: RATE_LIMIT_WINDOW,
+    timeWindow: '1 minute',
   } as RateLimitPluginOptions)
 
   app.addHook('onRequest', async (req, reply) => {
