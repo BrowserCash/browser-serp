@@ -87,6 +87,21 @@ function dumpHtml(html: string, label: string) {
   }
 }
 
+function extractJsonArray(text: string): any[] | null {
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const first = text.indexOf('[');
+  const last = text.lastIndexOf(']');
+  if (first !== -1 && last !== -1 && last > first) {
+    const slice = text.slice(first, last + 1);
+    try {
+      return JSON.parse(slice);
+    } catch {}
+  }
+  return null;
+}
+
 async function runGoogleSearch(page: any, params: SearchParams): Promise<{ results: any[]; blocked: boolean }> {
   const count = Math.min(Math.max(params.count ?? 10, 1), 20)
   const hl = params.search_lang || 'en'
@@ -110,52 +125,31 @@ async function runGoogleSearch(page: any, params: SearchParams): Promise<{ resul
 
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) {
-      // Fallback to DOM parsing if no key
-      return await page.evaluate(() => {
-        const items: { title: string; url: string; description: string; position: number }[] = []
-        const candidates = Array.from(document.querySelectorAll<HTMLDivElement>('div.g, div.tF2Cxc, div.MjjYud'))
-        const extractDesc = (root: Element | null) => {
-          if (!root) return ''
-          const descNode =
-            root.querySelector<HTMLElement>('div.VwiC3b') ||
-            root.querySelector<HTMLElement>('span.aCOpRe') ||
-            root.querySelector<HTMLElement>('div.PV9nzc') ||
-            root.querySelector<HTMLElement>('div.AP7Wnd') ||
-            root.querySelector<HTMLElement>('div[data-sncf]') ||
-            root.querySelector<HTMLElement>('span[data-sncf]')
-          return descNode?.textContent?.trim() || ''
-        }
-        candidates.forEach((el) => {
-          const link = el.querySelector<HTMLAnchorElement>('a')
-          const titleEl = el.querySelector<HTMLHeadingElement>('h3')
-          const href = link?.href?.trim()
-          const title = titleEl?.textContent?.trim()
-          if (!title || !href || !href.startsWith('http')) return
-          const desc = extractDesc(el)
-          items.push({ title, url: href, description: desc, position: items.length + 1 })
-        })
-        return items
-      })
+      console.error('[serp-parser] OPENROUTER_API_KEY not set; returning empty results')
+      return []
     }
 
     try {
-      const prompt = `
+        const prompt = `
 You are a DOM parser. Extract up to ${params.count} web search results from the HTML of a Google SERP.
 For each result, return: title, url, description, position (starting at 1).
 Ignore non-result cards (people also ask, images, videos).
-Return a JSON array.`
+Return ONLY a valid JSON array (no markdown fences, no prose), e.g.:
+[
+  {"title":"...","url":"https://...","description":"...","position":1}
+]`
 
-      const resp = await axios.post(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: 'You extract structured search results from HTML.' },
-            { role: 'user', content: `${prompt}\n\nHTML:\n${html.slice(0, 18000)}` },
-          ],
-          max_tokens: 1200,
+        const resp = await axios.post(
+          'https://openrouter.ai/api/v1/chat/completions',
+          {
+            model: 'x-ai/grok-4.1-fast',
+            messages: [
+              { role: 'system', content: 'You extract structured search results from HTML.' },
+              { role: 'user', content: `${prompt}\n\nHTML:\n${html.slice(0, 15000)}` },
+            ],
+            max_tokens: 1200,
           temperature: 0,
-          },
+        },
         {
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -165,21 +159,17 @@ Return a JSON array.`
         }
       )
       let text = resp.data?.choices?.[0]?.message?.content || '[]'
-      // Strip markdown fences if present
       text = text.trim()
       if (text.startsWith('```')) {
-        const firstFence = text.indexOf('```')
-        const secondFence = text.indexOf('```', firstFence + 3)
-        if (secondFence > firstFence) {
-          text = text.slice(firstFence + 3, secondFence).trim()
-          if (text.startsWith('json')) {
-            text = text.slice(4).trim()
-          }
+        const parts = text.split('```')
+        if (parts.length >= 3) {
+          text = parts[1].trim()
+          if (text.startsWith('json')) text = text.slice(4).trim()
         }
       }
-      const parsed = JSON.parse(text)
-      if (Array.isArray(parsed)) {
-        return parsed
+      const parsedArr = extractJsonArray(text)
+      if (parsedArr && Array.isArray(parsedArr)) {
+        return parsedArr
           .filter(
             (r) => r && typeof r.title === 'string' && typeof r.url === 'string' && r.url.startsWith('http')
           )
@@ -191,37 +181,11 @@ Return a JSON array.`
           }))
       }
     } catch (err) {
-      console.error('[serp-parser] openrouter failed, falling back to DOM parse', err?.message || err)
+      console.error('[serp-parser] openrouter failed', err?.message || err)
     }
 
-    // Fallback to DOM parse on errors
-    return await page.evaluate(() => {
-      const items: { title: string; url: string; description: string; position: number }[] = []
-      const candidates = Array.from(document.querySelectorAll<HTMLDivElement>('div.g, div.tF2Cxc, div.MjjYud'))
-
-      function extractDesc(root: Element | null): string {
-        if (!root) return ''
-        const descNode =
-          root.querySelector<HTMLElement>('div.VwiC3b') ||
-          root.querySelector<HTMLElement>('span.aCOpRe') ||
-          root.querySelector<HTMLElement>('div.PV9nzc') ||
-          root.querySelector<HTMLElement>('div.AP7Wnd') ||
-          root.querySelector<HTMLElement>('div[data-sncf]') ||
-          root.querySelector<HTMLElement>('span[data-sncf]')
-        return descNode?.textContent?.trim() || ''
-      }
-
-      for (const el of candidates) {
-        const link = el.querySelector<HTMLAnchorElement>('a')
-        const titleEl = el.querySelector<HTMLHeadingElement>('h3')
-        const href = link?.href?.trim()
-        const title = titleEl?.textContent?.trim()
-        if (!title || !href || !href.startsWith('http')) continue
-        const desc = extractDesc(el)
-        items.push({ title, url: href, description: desc, position: items.length + 1 })
-      }
-      return items
-    })
+    // If nothing parsed, return empty
+    return []
   }
 
   const fetchAndParse = async (url: string, tag: string) => {
@@ -254,20 +218,26 @@ Return a JSON array.`
 // 3) connecting via CDP and fetching a Google SERP
 // 4) cleaning up the session
 export async function dispatchBrowserQuery(params: SearchParams) {
+  const t0 = Date.now()
+  console.log('[serp] start', { q: params.q, count: params.count, lang: params.search_lang, country: params.country })
   const session = await createSession()
   const sessionId = session.sessionId
+  console.log('[serp] session created', { sessionId })
   let browser: any | null = null
 
   try {
     const activeSession = await waitForActiveSession(sessionId)
+    console.log('[serp] session active', { sessionId })
     if (!activeSession.cdpUrl) throw new Error('No CDP URL returned for session')
 
     browser = await chromium.connectOverCDP(activeSession.cdpUrl)
     const context = browser.contexts()[0] || (await browser.newContext())
     const page = context.pages()[0] || (await context.newPage())
+    console.log('[serp] connected to cdp', { sessionId })
 
     const g = await runGoogleSearch(page, params)
     const results = g.results
+    console.log('[serp] fetched', { sessionId, results: results?.length, blocked: g.blocked, ms: Date.now() - t0 })
     await browser.close().catch(() => {})
     browser = null
     return { results }
@@ -276,5 +246,6 @@ export async function dispatchBrowserQuery(params: SearchParams) {
       await browser.close().catch(() => {})
     }
     await stopSession(sessionId)
+    console.log('[serp] session closed', { sessionId, ms: Date.now() - t0 })
   }
 }
