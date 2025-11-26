@@ -36,13 +36,13 @@ curl -X POST http://localhost:8080/api/v1/search \
     "country": "us"
   }'
 ```
-
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `BROWSER_API_KEY` | **Required**. Your API key from the [Browser.cash Dashboard](https://browser.cash). |
 | `SERP_POOL_SIZE` | Number of concurrent sessions (default: 3). |
+| `SERP_DEBUG_LOG` | Set to `true` to enable verbose debug logging. |
 | `PORT` | Server port (default: 8080). |
 
 ## Resources

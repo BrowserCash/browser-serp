@@ -3,7 +3,7 @@ import Fastify from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import { searchRoute } from './routes/search.js'
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './env.js'
-import { createSerpClient } from './services/browser-cash.js'
+import { createSerpClient } from './services/serp.js'
 
 const PORT = loadEnvNumber('PORT', 8080)
 const RATE_LIMIT_MAX = loadEnvNumber('RATE_LIMIT_MAX', 100)

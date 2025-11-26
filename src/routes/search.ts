@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import type { SerpClient, SearchResult } from '../services/browser-cash.js'
+import type { SerpClient, SearchResult } from '../services/serp.js'
 
 const searchSchema = z.object({
   q: z.string().min(1),
