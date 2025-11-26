@@ -9,6 +9,4 @@ export const searchSchema = z.object({
   safesearch: z.enum(['off', 'moderate', 'strict']).optional(),
 })
 
-export type inferRouterInputs = {
-  search: z.infer<typeof searchSchema>
-}
+export type SearchInput = z.infer<typeof searchSchema>

@@ -1,12 +1,34 @@
-import type { inferRouterInputs } from '../types/search.js'
+import type { SearchInput } from '../types/search.js'
+import type { SearchResult } from './browser-cash.js'
 
-type SearchParams = inferRouterInputs['search']
+interface RawResults {
+  results: SearchResult[]
+}
 
-// Placeholder: transform raw browser output into SERP-like response
-export function rankAndFormat(params: SearchParams, raw: any) {
-  const results = (raw?.results as any[] | undefined) ?? []
+interface FormattedResponse {
+  type: 'search'
+  query: {
+    original: string
+    show_strict_warning: boolean
+  }
+  web: {
+    results: SearchResult[]
+    family_friendly: boolean
+  }
+  mixed: {
+    type: 'mixed'
+    main: SearchResult[]
+    top: SearchResult[]
+    side: SearchResult[]
+  }
+}
 
-  // TODO: implement ranking/scoring; for now, return passthrough structure
+/**
+ * Format raw browser results into a structured SERP response
+ */
+export function rankAndFormat(params: SearchInput, raw: RawResults): FormattedResponse {
+  const results = raw.results ?? []
+
   return {
     type: 'search',
     query: {
