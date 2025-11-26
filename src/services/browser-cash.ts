@@ -1,6 +1,6 @@
 import { chromium } from "patchright-core";
 import BrowsercashSDK from "@browsercash/sdk";
-import { loadEnvString, loadEnvNumber } from "../lib/env.js";
+import { loadEnvString, loadEnvNumber } from "../env.js";
 import fs from "node:fs";
 import path from "node:path";
 

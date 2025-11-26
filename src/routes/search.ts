@@ -1,10 +1,64 @@
 import type { FastifyInstance } from 'fastify'
-import { searchSchema, type SearchInput } from '../types/search.js'
-import { rankAndFormat } from '../services/ranking.js'
-import type { SerpClient } from '../services/browser-cash.js'
+import { z } from 'zod'
+import type { SerpClient, SearchResult } from '../services/browser-cash.js'
+
+const searchSchema = z.object({
+  q: z.string().min(1),
+  count: z.number().int().min(1).max(100).default(10),
+  country: z.string().min(2).max(10).optional(),
+  search_lang: z.string().optional(),
+  freshness: z.enum(['day', 'week', 'month', 'year']).optional(),
+  safesearch: z.enum(['off', 'moderate', 'strict']).optional(),
+})
+
+type SearchInput = z.infer<typeof searchSchema>
 
 interface SearchRouteOptions {
   serpClient: SerpClient
+}
+
+interface RawResults {
+  results: SearchResult[]
+}
+
+interface FormattedResponse {
+  type: 'search'
+  query: {
+    original: string
+    show_strict_warning: boolean
+  }
+  web: {
+    results: SearchResult[]
+    family_friendly: boolean
+  }
+  mixed: {
+    type: 'mixed'
+    main: SearchResult[]
+    top: SearchResult[]
+    side: SearchResult[]
+  }
+}
+
+function rankAndFormat(params: SearchInput, raw: RawResults): FormattedResponse {
+  const results = raw.results ?? []
+
+  return {
+    type: 'search',
+    query: {
+      original: params.q,
+      show_strict_warning: false,
+    },
+    web: {
+      results,
+      family_friendly: (params.safesearch ?? 'moderate') !== 'off',
+    },
+    mixed: {
+      type: 'mixed',
+      main: results.slice(0, Math.min(3, results.length)),
+      top: [],
+      side: [],
+    },
+  }
 }
 
 export async function searchRoute(app: FastifyInstance, opts: SearchRouteOptions): Promise<void> {

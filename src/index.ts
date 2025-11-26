@@ -2,7 +2,7 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import { searchRoute } from './routes/search.js'
-import { loadEnvNumber, loadEnvString, loadEnvStringList } from './lib/env.js'
+import { loadEnvNumber, loadEnvString, loadEnvStringList } from './env.js'
 import { createSerpClient } from './services/browser-cash.js'
 
 const PORT = loadEnvNumber('PORT', 8080)
