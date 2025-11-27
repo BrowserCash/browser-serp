@@ -194,6 +194,35 @@ export async function runGoogleSearch(
     timing.mark("refresh_parse_dom");
   }
 
+  // Pagination: Fetch more pages if we haven't met the requested count
+  let pageNum = 1;
+  const MAX_PAGES = 5;
+
+  while (results.length < count && pageNum < MAX_PAGES) {
+    const currentHtml = await page.content().catch(() => "");
+    if (/captcha-form|recaptcha|unusual traffic|consent\.google/i.test(currentHtml)) break;
+
+    try {
+      const nextBtn = page.locator('a#pnnext, a[aria-label="Next page"], a:has-text("Next")').first();
+      if (await nextBtn.isVisible({ timeout: 2000 })) {
+        if (DEBUG_LOG) console.log(`[serp] clicking next page (current: ${results.length}, target: ${count})`);
+        await nextBtn.click();
+        await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+        
+        const newResults = await parseDomResults(page, requestCount);
+        for (const r of newResults) {
+          if (!results.find((x) => x.url === r.url)) results.push(r);
+        }
+        pageNum++;
+      } else {
+        break;
+      }
+    } catch (err) {
+      if (DEBUG_LOG) console.warn("[serp] pagination error", err);
+      break;
+    }
+  }
+
   // Detect if we're blocked
   const blocked =
     !results.length &&
