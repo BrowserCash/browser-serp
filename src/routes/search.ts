@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { SerpClient, SearchResult } from '../services/serp.js'
 
+const DEBUG_LOG = process.env.SERP_DEBUG_LOG === "1" || process.env.SERP_DEBUG_LOG === "true"
+
 const searchSchema = z.object({
   q: z.string().min(1),
   count: z.number().int().min(1).max(100).default(10),
@@ -78,12 +80,12 @@ export async function searchRoute(app: FastifyInstance, opts: SearchRouteOptions
     try {
       const rawResults = await opts.serpClient.search(params)
       const response = rankAndFormat(params, rawResults)
-      console.log('[search] done', { ms: Date.now() - start, results: rawResults.results.length })
+      if (DEBUG_LOG) console.log('[search] done', { ms: Date.now() - start, results: rawResults.results.length })
       return reply.send(response)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'failed to fetch SERP'
       req.log.error({ err }, 'search failed')
-      console.error('[search] failed', { ms: Date.now() - start, error: message })
+      if (DEBUG_LOG) console.error('[search] failed', { ms: Date.now() - start, error: message })
       return reply.status(502).send({
         error: 'upstream_error',
         message,

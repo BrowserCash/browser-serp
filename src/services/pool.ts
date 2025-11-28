@@ -12,10 +12,7 @@ const SESSION_MAX_AGE_MS = loadEnvNumber(
   "SERP_SESSION_MAX_AGE_MS",
   5 * 60 * 1000
 );
-const HEALTH_CHECK_INTERVAL_MS = loadEnvNumber(
-  "SERP_HEALTH_CHECK_INTERVAL_MS",
-  30_000
-);
+// Health check interval removed; we now rely on immediate disconnect events
 
 // Initialize Browser.cash SDK client
 const browserCashClient = new BrowsercashSDK({ apiKey: BROWSER_API_KEY });
@@ -31,10 +28,10 @@ export async function createConnectedSession(): Promise<ConnectedSession> {
     throw new Error("No CDP URL returned for session");
   }
 
-  if (DEBUG_LOG)
+  if (DEBUG_LOG) {
     console.log("[session] created", { sessionId: session.sessionId });
-  // Log CDP URL so it can be connected to externally if needed
-  console.log("[cdp] session ready", { sessionId: session.sessionId, cdpUrl: session.cdpUrl });
+    console.log("[cdp] session ready", { sessionId: session.sessionId, cdpUrl: `https://dash.browser.cash/cdp_tabs?ws=${encodeURIComponent(session.cdpUrl)}` });
+  }
 
   const browser = await chromium.connectOverCDP(session.cdpUrl);
   const context = browser.contexts()[0] || (await browser.newContext());
@@ -77,6 +74,7 @@ export async function closeConnectedSession(
 
 export function isSessionUsable(session: ConnectedSession | null): boolean {
   if (!session) return false;
+  if (typeof session.browser?.isConnected === "function" && !session.browser.isConnected()) return false;
   if (typeof session.page?.isClosed === "function" && session.page.isClosed())
     return false;
   if (session.useCount >= SESSION_MAX_USES) return false;
@@ -92,7 +90,6 @@ export class SessionPool {
   private inUse: Set<ConnectedSession> = new Set();
   private creating = 0;
   private closed = false;
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private waitQueue: Array<{
     resolve: (session: ConnectedSession) => void;
     reject: (err: Error) => void;
@@ -118,57 +115,10 @@ export class SessionPool {
     // Wait for all warmup to complete
     await Promise.allSettled(warmupPromises);
 
-    this.startHealthCheck();
-
     if (DEBUG_LOG) console.log("[pool] initialized", { ...this.stats() });
   }
 
-  private startHealthCheck(): void {
-    if (this.healthCheckTimer) return;
-
-    this.healthCheckTimer = setInterval(() => {
-      if (this.closed) return;
-      this.performHealthCheck();
-    }, HEALTH_CHECK_INTERVAL_MS);
-
-    if (this.healthCheckTimer.unref) {
-      this.healthCheckTimer.unref();
-    }
-  }
-
-  private performHealthCheck(): void {
-    if (DEBUG_LOG)
-      console.log("[pool] health check starting", { ...this.stats() });
-
-    const toRemove: ConnectedSession[] = [];
-
-    for (const session of this.available) {
-      if (!isSessionUsable(session)) {
-        toRemove.push(session);
-      }
-    }
-
-    for (const session of toRemove) {
-      const idx = this.available.indexOf(session);
-      if (idx !== -1) {
-        this.available.splice(idx, 1);
-        if (DEBUG_LOG)
-          console.log("[pool] health check: removing stale session", {
-            sessionId: session.sessionId,
-            age: Date.now() - session.createdAt,
-            useCount: session.useCount,
-          });
-        closeConnectedSession(session).catch((err) => {
-          if (DEBUG_LOG) console.warn("[pool] failed to close stale session", err);
-        });
-      }
-    }
-
-    this.replenishPool();
-
-    if (DEBUG_LOG)
-      console.log("[pool] health check complete", { ...this.stats() });
-  }
+  // Periodic health checks removed in favor of CDP disconnect events
 
   private replenishPool(): void {
     const deficit = this.size - this.totalCount;
@@ -199,6 +149,31 @@ export class SessionPool {
     try {
       const session = await createConnectedSession();
 
+      // Immediately react to underlying CDP disconnects
+      try {
+        if (typeof session.browser?.on === "function") {
+          session.browser.on("disconnected", () => {
+            if (DEBUG_LOG) console.log("[pool] browser disconnected", {
+              sessionId: session.sessionId,
+              ageMs: Date.now() - session.createdAt,
+              useCount: session.useCount,
+              pool: { available: this.available.length, inUse: this.inUse.size, waiting: this.waitQueue.length }
+            });
+            // Remove from any lists
+            const availIdx = this.available.indexOf(session);
+            if (availIdx !== -1) this.available.splice(availIdx, 1);
+            if (this.inUse.has(session)) this.inUse.delete(session);
+            // Ensure it is closed in the background and replenish
+            closeConnectedSession(session).catch((err) => {
+              if (DEBUG_LOG) console.warn("[pool] close on disconnect failed", err);
+            });
+            this.replenishPool();
+          });
+        }
+      } catch (err) {
+        if (DEBUG_LOG) console.warn("[pool] failed to attach disconnect listener", err);
+      }
+
       if (this.closed) {
         await closeConnectedSession(session);
         return;
@@ -221,8 +196,7 @@ export class SessionPool {
         const waiter = this.waitQueue.shift()!;
         this.inUse.add(session);
         session.useCount++;
-        // Log a browser miss whenever a request had to wait for a fresh browser
-        console.log("[browser miss] created new browser session for pending request", {
+        if (DEBUG_LOG) console.log("[browser miss] created new browser session for pending request", {
           sessionId: session.sessionId,
         });
         if (DEBUG_LOG)
@@ -233,16 +207,16 @@ export class SessionPool {
         waiter.resolve(session);
       } else {
         this.available.push(session);
-        // Log when a session with a CDP URL becomes available in the pool
-        console.log("[cdp] session added to pool", {
-          sessionId: session.sessionId,
-          cdpUrl: session.cdpUrl,
-        });
-        if (DEBUG_LOG)
+        if (DEBUG_LOG) {
+          console.log("[cdp] session added to pool", {
+            sessionId: session.sessionId,
+            cdpUrl: `https://dash.browser.cash/cdp_tabs?ws=${encodeURIComponent(session.cdpUrl)}`,
+          });
           console.log("[pool] session added to pool", {
             sessionId: session.sessionId,
             ...this.stats(),
           });
+        }
       }
 
       if (this.totalCount < this.size && !this.closed) {
@@ -296,8 +270,7 @@ export class SessionPool {
         });
 
       try {
-        // Log a browser miss whenever a request forces on-demand creation
-        console.log("[browser miss] no available sessions; creating new browser session on-demand");
+        if (DEBUG_LOG) console.log("[browser miss] no available sessions; creating new browser session on-demand");
         const session = await createConnectedSession();
 
         if (this.totalCount > this.size) {
@@ -315,16 +288,16 @@ export class SessionPool {
           this.creating--;
           this.inUse.add(session);
           session.useCount++;
-          // Log when a session is created on-demand and handed to the requester
-          console.log("[cdp] on-demand session assigned", {
-            sessionId: session.sessionId,
-            cdpUrl: session.cdpUrl,
-          });
-          if (DEBUG_LOG)
+          if (DEBUG_LOG) {
+            console.log("[cdp] on-demand session assigned", {
+              sessionId: session.sessionId,
+              cdpUrl: `https://dash.browser.cash/cdp_tabs?ws=${encodeURIComponent(session.cdpUrl)}`,
+            });
             console.log("[pool] on-demand session created", {
               sessionId: session.sessionId,
               ...this.stats(),
             });
+          }
           return session;
         }
       } catch (err) {
@@ -378,11 +351,6 @@ export class SessionPool {
 
   async shutdown(): Promise<void> {
     this.closed = true;
-
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
 
     while (this.waitQueue.length > 0) {
       const waiter = this.waitQueue.shift()!;

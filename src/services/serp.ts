@@ -42,6 +42,60 @@ function withTimeout<T>(
 }
 
 /**
+ * Race an operation against browser/page disconnect events to fail fast.
+ */
+function withDisconnectGuards<T>(
+  page: any,
+  browser: any,
+  op: Promise<T>
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      try {
+        if (browser?.off && onBrowserDisconnected) browser.off("disconnected", onBrowserDisconnected);
+      } catch {}
+      try {
+        if (page?.off && onPageClose) page.off("close", onPageClose);
+      } catch {}
+      try {
+        if (page?.off && onPageCrash) page.off("crash", onPageCrash);
+      } catch {}
+    };
+
+    const finishOk = (value: T) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const finishErr = (err: any) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    const onBrowserDisconnected = () => finishErr(new Error("browser_disconnected"));
+    const onPageClose = () => finishErr(new Error("page_closed"));
+    const onPageCrash = () => finishErr(new Error("page_crashed"));
+
+    try {
+      if (typeof browser?.on === "function") browser.on("disconnected", onBrowserDisconnected);
+    } catch {}
+    try {
+      if (typeof page?.on === "function") {
+        page.on("close", onPageClose);
+        page.on("crash", onPageCrash);
+      }
+    } catch {}
+
+    op.then(finishOk).catch(finishErr);
+  });
+}
+
+/**
  * Check if an error is retriable (session closed, network issues, timeouts, etc.)
  */
 function isRetriableError(err: unknown): boolean {
@@ -52,6 +106,9 @@ function isRetriableError(err: unknown): boolean {
   return (
     name === "TargetClosedError" ||
     name === "TimeoutError" ||
+    message.includes("browser_disconnected") ||
+    message.includes("page_closed") ||
+    message.includes("page_crashed") ||
     message.includes("Target page, context or browser has been closed") ||
     message.includes("Target closed") ||
     message.includes("Session closed") ||
@@ -79,6 +136,21 @@ class PooledSerpClient implements SerpClient {
     await this.pool.init();
   }
 
+  private isDisconnectError(err: unknown): boolean {
+    if (!err) return false;
+    const msg = err instanceof Error ? err.message : String(err);
+    return (
+      msg.includes("browser_disconnected") ||
+      msg.includes("page_closed") ||
+      msg.includes("page_crashed") ||
+      msg.includes("Target page, context or browser has been closed") ||
+      msg.includes("Target closed") ||
+      msg.includes("Session closed") ||
+      msg.includes("Protocol error") ||
+      msg.includes("Connection closed")
+    );
+  }
+
   async search(params: SearchParams): Promise<{ results: SearchResult[] }> {
     let lastError: unknown;
     let lastResults: SearchResult[] = [];
@@ -90,7 +162,7 @@ class PooledSerpClient implements SerpClient {
       try {
         // Wrap the entire search operation with a timeout
         const { results, blocked } = await withTimeout(
-          runGoogleSearch(session.page, params),
+          withDisconnectGuards(session.page, session.browser, runGoogleSearch(session.page, params)),
           SEARCH_TIMEOUT_MS,
           `Search operation timed out after ${SEARCH_TIMEOUT_MS}ms`
         );
@@ -108,7 +180,7 @@ class PooledSerpClient implements SerpClient {
           return { results };
         }
 
-        // Empty results - this is likely a stale session or page load issue
+        // Empty results - do not penalize the session; keep it in the pool
         lastResults = results;
 
         if (attempt < MAX_RETRIES) {
@@ -119,8 +191,8 @@ class PooledSerpClient implements SerpClient {
               blocked,
               ms: Date.now() - startTime,
             });
-          // Release the session as bad (likely stale) and try with a fresh one
-          this.pool.release(session, true);
+          // Release the session as healthy; try a fresh one next
+          this.pool.release(session, false);
           continue;
         }
 
@@ -130,7 +202,7 @@ class PooledSerpClient implements SerpClient {
             blocked,
             ms: Date.now() - startTime,
           });
-        this.pool.release(session, true);
+        this.pool.release(session, false);
         return { results: lastResults };
       } catch (err) {
         lastError = err;
@@ -149,13 +221,13 @@ class PooledSerpClient implements SerpClient {
               attempt: attempt + 1,
               maxRetries: MAX_RETRIES,
             });
-          // Release the bad session (marked as error) and continue to next attempt
-          this.pool.release(session, true);
+          // Only mark error if it's a disconnect; otherwise keep session
+          this.pool.release(session, this.isDisconnectError(err));
           continue;
         }
 
         // Non-retriable error or max retries reached - release and throw
-        this.pool.release(session, true);
+        this.pool.release(session, this.isDisconnectError(err));
         throw err;
       }
     }
@@ -193,7 +265,7 @@ async function dispatchBrowserQuery(
     try {
       // Wrap with timeout
       const { results, blocked } = await withTimeout(
-        runGoogleSearch(session.page, params),
+        withDisconnectGuards(session.page, session.browser, runGoogleSearch(session.page, params)),
         SEARCH_TIMEOUT_MS,
         `Search operation timed out after ${SEARCH_TIMEOUT_MS}ms`
       );
