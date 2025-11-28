@@ -33,6 +33,8 @@ export async function createConnectedSession(): Promise<ConnectedSession> {
 
   if (DEBUG_LOG)
     console.log("[session] created", { sessionId: session.sessionId });
+  // Log CDP URL so it can be connected to externally if needed
+  console.log("[cdp] session ready", { sessionId: session.sessionId, cdpUrl: session.cdpUrl });
 
   const browser = await chromium.connectOverCDP(session.cdpUrl);
   const context = browser.contexts()[0] || (await browser.newContext());
@@ -40,6 +42,7 @@ export async function createConnectedSession(): Promise<ConnectedSession> {
 
   return {
     sessionId: session.sessionId,
+    cdpUrl: session.cdpUrl,
     browser,
     page,
     createdAt: Date.now(),
@@ -218,6 +221,10 @@ export class SessionPool {
         const waiter = this.waitQueue.shift()!;
         this.inUse.add(session);
         session.useCount++;
+        // Log a browser miss whenever a request had to wait for a fresh browser
+        console.log("[browser miss] created new browser session for pending request", {
+          sessionId: session.sessionId,
+        });
         if (DEBUG_LOG)
           console.log("[pool] session created and assigned to waiter", {
             sessionId: session.sessionId,
@@ -226,6 +233,11 @@ export class SessionPool {
         waiter.resolve(session);
       } else {
         this.available.push(session);
+        // Log when a session with a CDP URL becomes available in the pool
+        console.log("[cdp] session added to pool", {
+          sessionId: session.sessionId,
+          cdpUrl: session.cdpUrl,
+        });
         if (DEBUG_LOG)
           console.log("[pool] session added to pool", {
             sessionId: session.sessionId,
@@ -284,6 +296,8 @@ export class SessionPool {
         });
 
       try {
+        // Log a browser miss whenever a request forces on-demand creation
+        console.log("[browser miss] no available sessions; creating new browser session on-demand");
         const session = await createConnectedSession();
 
         if (this.totalCount > this.size) {
@@ -301,6 +315,11 @@ export class SessionPool {
           this.creating--;
           this.inUse.add(session);
           session.useCount++;
+          // Log when a session is created on-demand and handed to the requester
+          console.log("[cdp] on-demand session assigned", {
+            sessionId: session.sessionId,
+            cdpUrl: session.cdpUrl,
+          });
           if (DEBUG_LOG)
             console.log("[pool] on-demand session created", {
               sessionId: session.sessionId,

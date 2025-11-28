@@ -16,6 +16,7 @@ export interface SearchResult {
 
 export interface ConnectedSession {
   sessionId: string;
+  cdpUrl: string;
   browser: any;
   page: any;
   createdAt: number;
