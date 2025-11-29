@@ -236,14 +236,57 @@ export async function runGoogleSearch(
               `[serp] clicking next page (current: ${results.length}, target: ${count})`
             );
 
-          await Promise.all([
-            nextBtn.click(),
-            page
-              .waitForLoadState("domcontentloaded", { timeout: 6_000 })
-              .catch(() => {}),
-          ]);
+          // Capture current first result to verify page change
+          const currentFirstTitle = await page
+            .evaluate(() => {
+              const el = document.querySelector("div.g h3");
+              return el ? el.textContent : "";
+            })
+            .catch(() => "");
 
-          const newResults = await parseDomResults(page, requestCount);
+          await nextBtn.click();
+
+          // Wait for results to actually update (fastest way to detect AJAX load)
+          // Removes polling delay (uses RAF) for instant reaction
+          let changed = false;
+          try {
+            await page.waitForFunction(
+              (oldTitle: string) => {
+                const newEl = document.querySelector("div.g h3");
+                const newTitle = newEl ? newEl.textContent : "";
+                return newTitle && newTitle !== oldTitle;
+              },
+              currentFirstTitle,
+              { timeout: 6000 }
+            );
+            changed = true;
+          } catch (e) {
+            if (DEBUG_LOG) log("[serp] pagination wait-for-change timed out");
+          }
+
+          // Optimistic parse - no wait if changed detected
+          let newResults = await parseDomResults(page, requestCount);
+
+          // Smart Retry: If no new results (race condition), wait briefly and retry once
+          let newUnique = 0;
+          for (const r of newResults) {
+            if (!results.find((x) => x.url === r.url)) newUnique++;
+          }
+
+          if (newUnique === 0 && changed) {
+            if (DEBUG_LOG)
+              log(
+                "[serp] pagination changed but no new results, retrying parse"
+              );
+            await page.waitForTimeout(500);
+            newResults = await parseDomResults(page, requestCount);
+          } else if (newUnique === 0 && !changed) {
+            // Fail fast to avoid infinite loop
+            if (DEBUG_LOG)
+              log("[serp] pagination failed to change content, stopping");
+            break;
+          }
+
           for (const r of newResults) {
             if (!results.find((x) => x.url === r.url)) results.push(r);
           }
