@@ -1,9 +1,14 @@
 import { loadEnvNumber } from "../env.js";
-import { SessionPool, createConnectedSession, closeConnectedSession } from "./pool.js";
+import {
+  SessionPool,
+  createConnectedSession,
+  closeConnectedSession,
+} from "./pool.js";
 import { runGoogleSearch } from "./search.js";
 import { SearchParams, SearchResult } from "./types.js";
 
-const DEBUG_LOG = process.env.SERP_DEBUG_LOG === "1" || process.env.SERP_DEBUG_LOG === "true";
+const DEBUG_LOG =
+  process.env.SERP_DEBUG_LOG === "1" || process.env.SERP_DEBUG_LOG === "true";
 
 // Pool configuration
 const POOL_SIZE = loadEnvNumber("SERP_POOL_SIZE", 3);
@@ -54,7 +59,8 @@ function withDisconnectGuards<T>(
 
     const cleanup = () => {
       try {
-        if (browser?.off && onBrowserDisconnected) browser.off("disconnected", onBrowserDisconnected);
+        if (browser?.off && onBrowserDisconnected)
+          browser.off("disconnected", onBrowserDisconnected);
       } catch {}
       try {
         if (page?.off && onPageClose) page.off("close", onPageClose);
@@ -77,12 +83,14 @@ function withDisconnectGuards<T>(
       reject(err);
     };
 
-    const onBrowserDisconnected = () => finishErr(new Error("browser_disconnected"));
+    const onBrowserDisconnected = () =>
+      finishErr(new Error("browser_disconnected"));
     const onPageClose = () => finishErr(new Error("page_closed"));
     const onPageCrash = () => finishErr(new Error("page_crashed"));
 
     try {
-      if (typeof browser?.on === "function") browser.on("disconnected", onBrowserDisconnected);
+      if (typeof browser?.on === "function")
+        browser.on("disconnected", onBrowserDisconnected);
     } catch {}
     try {
       if (typeof page?.on === "function") {
@@ -162,7 +170,11 @@ class PooledSerpClient implements SerpClient {
       try {
         // Wrap the entire search operation with a timeout
         const { results, blocked } = await withTimeout(
-          withDisconnectGuards(session.page, session.browser, runGoogleSearch(session.page, params)),
+          withDisconnectGuards(
+            session.page,
+            session.browser,
+            runGoogleSearch(session.page, params)
+          ),
           SEARCH_TIMEOUT_MS,
           `Search operation timed out after ${SEARCH_TIMEOUT_MS}ms`
         );
@@ -207,6 +219,11 @@ class PooledSerpClient implements SerpClient {
       } catch (err) {
         lastError = err;
 
+        const isTimeout =
+          err instanceof Error &&
+          (err.message.toLowerCase().includes("timeout") ||
+            err.message.toLowerCase().includes("timed out"));
+
         if (DEBUG_LOG)
           console.log("[serp] search error", {
             attempt: attempt + 1,
@@ -221,13 +238,13 @@ class PooledSerpClient implements SerpClient {
               attempt: attempt + 1,
               maxRetries: MAX_RETRIES,
             });
-          // Only mark error if it's a disconnect; otherwise keep session
-          this.pool.release(session, this.isDisconnectError(err));
+          // Only mark error if it's a disconnect OR a timeout; otherwise keep session
+          this.pool.release(session, this.isDisconnectError(err) || isTimeout);
           continue;
         }
 
         // Non-retriable error or max retries reached - release and throw
-        this.pool.release(session, this.isDisconnectError(err));
+        this.pool.release(session, this.isDisconnectError(err) || isTimeout);
         throw err;
       }
     }
@@ -265,7 +282,11 @@ async function dispatchBrowserQuery(
     try {
       // Wrap with timeout
       const { results, blocked } = await withTimeout(
-        withDisconnectGuards(session.page, session.browser, runGoogleSearch(session.page, params)),
+        withDisconnectGuards(
+          session.page,
+          session.browser,
+          runGoogleSearch(session.page, params)
+        ),
         SEARCH_TIMEOUT_MS,
         `Search operation timed out after ${SEARCH_TIMEOUT_MS}ms`
       );
