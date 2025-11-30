@@ -192,7 +192,7 @@ class PooledSerpClient implements SerpClient {
           return { results };
         }
 
-        // Empty results - do not penalize the session; keep it in the pool
+        // Empty results marked as blocked - remove session from pool and replace it
         lastResults = results;
 
         if (attempt < MAX_RETRIES) {
@@ -203,8 +203,8 @@ class PooledSerpClient implements SerpClient {
               blocked,
               ms: Date.now() - startTime,
             });
-          // Release the session as healthy; try a fresh one next
-          this.pool.release(session, false);
+          // If blocked, mark session as errored to remove and replace it
+          this.pool.release(session, blocked);
           continue;
         }
 
@@ -214,7 +214,8 @@ class PooledSerpClient implements SerpClient {
             blocked,
             ms: Date.now() - startTime,
           });
-        this.pool.release(session, false);
+        // If blocked, mark session as errored to remove and replace it
+        this.pool.release(session, blocked);
         return { results: lastResults };
       } catch (err) {
         lastError = err;
