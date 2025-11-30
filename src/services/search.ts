@@ -107,14 +107,6 @@ export async function runGoogleSearch(
     if (DEBUG_LOG)
       log("[serp] searching", { q: params.q, count, requestCount });
 
-    try {
-      await page
-        .context()
-        .setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
-    } catch (err) {
-      if (DEBUG_LOG) log("[serp] failed to set headers", err);
-    }
-
     timing.mark("set_headers");
 
     const fetchAndParse = async (
@@ -141,21 +133,14 @@ export async function runGoogleSearch(
         .goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 })
         .catch(() => null);
 
-      markStep(`${tag}_navigation`);
-
-      // Check if navigation succeeded
       if (!response) {
         if (DEBUG_LOG) log("[serp] navigation failed for", tag);
         return { results: [], html: "", stepTimings: [] };
       }
 
-      // Ensure search container exists before parsing (crucial for domcontentloaded)
-      try {
-        await page.waitForSelector("div#search, div#rso", { timeout: 2_000 });
-      } catch {}
+      markStep(`${tag}_navigation`);
 
-      const html = await page.content().catch(() => "");
-      if (html) dumpHtml(html, tag);
+      let html = "";
 
       markStep(`${tag}_get_content`);
 
@@ -178,7 +163,7 @@ export async function runGoogleSearch(
 
     // If still empty, try one more time with a page refresh
     // This helps if the page loaded but scripts failed or content was dynamically blocked temporarily
-    if (!results.length && lastHtml) {
+    if (!results.length) {
       if (DEBUG_LOG) log("[serp] trying page refresh");
       timing.mark("refresh_start");
 
@@ -203,7 +188,7 @@ export async function runGoogleSearch(
       timing.mark("refresh_wait_results");
 
       results = await parseDomResults(page, requestCount);
-      lastHtml = await page.content().catch(() => "");
+      lastHtml = ""
 
       timing.mark("refresh_parse_dom");
     }
@@ -212,57 +197,30 @@ export async function runGoogleSearch(
     let pageNum = 1;
     const MAX_PAGES = 5;
     while (results.length < count && pageNum < MAX_PAGES) {
-      const currentHtml = await page.content().catch(() => "");
-      if (
-        /captcha-form|recaptcha|unusual traffic|consent\.google/i.test(
-          currentHtml
-        )
-      )
-        break;
-
       try {
-        // Scroll to bottom to ensure footer/next button is ready
-        await page.evaluate(() =>
-          window.scrollTo(0, document.body.scrollHeight)
-        );
-        await page.waitForTimeout(200);
-
-        const nextBtn = page
-          .locator('a#pnnext, a[aria-label="Next page"], a:has-text("Next")')
-          .first();
-        if (await nextBtn.isVisible({ timeout: 1500 })) {
+        if (true) {
           if (DEBUG_LOG)
             log(
               `[serp] clicking next page (current: ${results.length}, target: ${count})`
             );
 
-          // Capture current first result to verify page change
-          const currentFirstTitle = await page
-            .evaluate(() => {
-              const el = document.querySelector("div.g h3");
-              return el ? el.textContent : "";
-            })
-            .catch(() => "");
+          const currentURL = page.url();
+          console.time("click_next");
+          const newDestUrl = new URL(currentURL);
+          newDestUrl.searchParams.set("start", (pageNum * 10).toString());
+          await page.evaluate((url: string) => {
+            window.location.href = url;
+          }, newDestUrl.toString());
+          console.timeEnd("click_next");
 
-          await nextBtn.click();
-
-          // Wait for results to actually update (fastest way to detect AJAX load)
-          // Removes polling delay (uses RAF) for instant reaction
           let changed = false;
-          try {
-            await page.waitForFunction(
-              (oldTitle: string) => {
-                const newEl = document.querySelector("div.g h3");
-                const newTitle = newEl ? newEl.textContent : "";
-                return newTitle && newTitle !== oldTitle;
-              },
-              currentFirstTitle,
-              { timeout: 6000 }
-            );
-            changed = true;
-          } catch (e) {
-            if (DEBUG_LOG) log("[serp] pagination wait-for-change timed out");
+
+          while (page.url() === currentURL) {
+            await page.waitForTimeout(10);
           }
+          changed = true;
+
+          if (DEBUG_LOG) log("[serp] pagination detected change:", changed);
 
           // Optimistic parse - no wait if changed detected
           let newResults = await parseDomResults(page, requestCount);
@@ -272,6 +230,8 @@ export async function runGoogleSearch(
           for (const r of newResults) {
             if (!results.find((x) => x.url === r.url)) newUnique++;
           }
+
+          if (DEBUG_LOG) log("[serp] pagination new unique results:", newUnique);
 
           if (newUnique === 0 && changed) {
             if (DEBUG_LOG)
@@ -300,12 +260,7 @@ export async function runGoogleSearch(
       }
     }
 
-    // Detect if we're blocked
-    const blocked =
-      !results.length &&
-      /captcha-form|recaptcha|unusual traffic|consent\.google/i.test(
-        lastHtml || ""
-      );
+    const blocked = !results.length;
 
     timing.mark("detect_blocked");
 
