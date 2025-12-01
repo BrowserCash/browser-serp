@@ -1,14 +1,12 @@
 import { loadEnvNumber } from '../env.js';
-import { SessionPool, isSessionUsable } from './pool.js';
+import { SessionPool } from './pool.js';
 import { runGoogleSearch } from './search.js';
-import type { SearchParams, SearchResult, ConnectedSession } from './types.js';
+import type { SearchParams, SearchResult } from './types.js';
 
 const DEBUG_LOG = process.env.SERP_DEBUG_LOG === '1' || process.env.SERP_DEBUG_LOG === 'true';
 
-// Pool configuration
+// Configuration
 const POOL_SIZE = loadEnvNumber('SERP_POOL_SIZE', 3);
-
-// Search timeout - max time for entire search operation
 const SEARCH_TIMEOUT_MS = loadEnvNumber('SERP_SEARCH_TIMEOUT_MS', 30_000);
 const MAX_RETRIES = loadEnvNumber('SERP_MAX_RETRIES', 2);
 
@@ -18,22 +16,17 @@ export interface SerpClient {
   init(): Promise<void>;
   search(params: SearchParams): Promise<{ results: SearchResult[] }>;
   shutdown(): Promise<void>;
+  stats(): ReturnType<SessionPool['stats']>;
 }
 
 /**
  * Wrap a promise with a timeout
  */
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  errorMessage: string
-): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout>;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(errorMessage));
-    }, timeoutMs);
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
   });
 
   return Promise.race([promise, timeoutPromise]).finally(() => {
@@ -42,29 +35,19 @@ function withTimeout<T>(
 }
 
 /**
- * Race an operation against browser/page disconnect events to fail fast
+ * Race an operation against browser/page disconnect events
  */
-function withDisconnectGuards<T>(
-  page: any,
-  browser: any,
-  op: Promise<T>
-): Promise<T> {
+function withDisconnectGuards<T>(page: unknown, browser: unknown, op: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    const pageAny = page as any;
+    const browserAny = browser as any;
 
     const cleanup = () => {
       try {
-        if (browser?.off && onBrowserDisconnected) {
-          browser.off('disconnected', onBrowserDisconnected);
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-      try {
-        if (page?.off) {
-          if (onPageClose) page.off('close', onPageClose);
-          if (onPageCrash) page.off('crash', onPageCrash);
-        }
+        browserAny?.off?.('disconnected', onDisconnect);
+        pageAny?.off?.('close', onClose);
+        pageAny?.off?.('crash', onCrash);
       } catch {
         // Ignore cleanup errors
       }
@@ -77,30 +60,21 @@ function withDisconnectGuards<T>(
       resolve(value);
     };
 
-    const finishErr = (err: unknown) => {
+    const finishErr = (err: Error) => {
       if (settled) return;
       settled = true;
       cleanup();
       reject(err);
     };
 
-    const onBrowserDisconnected = () => finishErr(new Error('browser_disconnected'));
-    const onPageClose = () => finishErr(new Error('page_closed'));
-    const onPageCrash = () => finishErr(new Error('page_crashed'));
+    const onDisconnect = () => finishErr(new Error('browser_disconnected'));
+    const onClose = () => finishErr(new Error('page_closed'));
+    const onCrash = () => finishErr(new Error('page_crashed'));
 
     try {
-      if (typeof browser?.on === 'function') {
-        browser.on('disconnected', onBrowserDisconnected);
-      }
-    } catch {
-      // Ignore listener attachment errors
-    }
-
-    try {
-      if (typeof page?.on === 'function') {
-        page.on('close', onPageClose);
-        page.on('crash', onPageCrash);
-      }
+      browserAny?.on?.('disconnected', onDisconnect);
+      pageAny?.on?.('close', onClose);
+      pageAny?.on?.('crash', onCrash);
     } catch {
       // Ignore listener attachment errors
     }
@@ -110,30 +84,31 @@ function withDisconnectGuards<T>(
 }
 
 /**
- * Check if an error is retriable (session closed, network issues, timeouts, etc.)
+ * Check if an error is retriable
  */
 function isRetriableError(err: unknown): boolean {
   if (!err) return false;
   const message = err instanceof Error ? err.message : String(err);
   const name = err instanceof Error ? err.name : '';
 
-  return (
-    name === 'TargetClosedError' ||
-    name === 'TimeoutError' ||
-    message.includes('browser_disconnected') ||
-    message.includes('page_closed') ||
-    message.includes('page_crashed') ||
-    message.includes('Target page, context or browser has been closed') ||
-    message.includes('Target closed') ||
-    message.includes('Session closed') ||
-    message.includes('Protocol error') ||
-    message.includes('Connection closed') ||
-    message.includes('net::ERR_') ||
-    message.includes('Timeout') ||
-    message.includes('timeout') ||
-    message.includes('timed out') ||
-    message.includes('Search operation timed out')
-  );
+  const retriablePatterns = [
+    'TargetClosedError',
+    'TimeoutError',
+    'browser_disconnected',
+    'page_closed',
+    'page_crashed',
+    'Target page, context or browser has been closed',
+    'Target closed',
+    'Session closed',
+    'Protocol error',
+    'Connection closed',
+    'net::ERR_',
+    'Timeout',
+    'timeout',
+    'timed out',
+  ];
+
+  return retriablePatterns.some((p) => name.includes(p) || message.includes(p));
 }
 
 /**
@@ -142,20 +117,23 @@ function isRetriableError(err: unknown): boolean {
 function isDisconnectError(err: unknown): boolean {
   if (!err) return false;
   const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes('browser_disconnected') ||
-    msg.includes('page_closed') ||
-    msg.includes('page_crashed') ||
-    msg.includes('Target page, context or browser has been closed') ||
-    msg.includes('Target closed') ||
-    msg.includes('Session closed') ||
-    msg.includes('Protocol error') ||
-    msg.includes('Connection closed')
-  );
+
+  const disconnectPatterns = [
+    'browser_disconnected',
+    'page_closed',
+    'page_crashed',
+    'Target page, context or browser has been closed',
+    'Target closed',
+    'Session closed',
+    'Protocol error',
+    'Connection closed',
+  ];
+
+  return disconnectPatterns.some((p) => msg.includes(p));
 }
 
 /**
- * Pooled SERP Client - handles concurrent requests with session pooling
+ * Pooled SERP client with automatic retry and session management
  */
 class PooledSerpClient implements SerpClient {
   private pool: SessionPool;
@@ -177,13 +155,8 @@ class PooledSerpClient implements SerpClient {
       const startTime = Date.now();
 
       try {
-        // Wrap the entire search operation with timeout and disconnect guards
         const { results, blocked } = await withTimeout(
-          withDisconnectGuards(
-            session.page,
-            session.browser,
-            runGoogleSearch(session.page, params)
-          ),
+          withDisconnectGuards(session.page, session.browser, runGoogleSearch(session.page, params)),
           SEARCH_TIMEOUT_MS,
           `Search operation timed out after ${SEARCH_TIMEOUT_MS}ms`
         );
@@ -195,20 +168,18 @@ class PooledSerpClient implements SerpClient {
           });
         }
 
-        // Check if we got results
         if (results.length > 0) {
           this.pool.release(session, false);
           return { results };
         }
 
-        // Empty results - retry with fresh session if blocked
+        // Empty results - retry if blocked
         lastResults = results;
 
         if (attempt < MAX_RETRIES) {
           if (DEBUG_LOG) {
-            console.log('[serp] empty results, retrying with new session', {
+            console.log('[serp] empty results, retrying', {
               attempt: attempt + 1,
-              maxRetries: MAX_RETRIES,
               blocked,
               ms: Date.now() - startTime,
             });
@@ -217,22 +188,14 @@ class PooledSerpClient implements SerpClient {
           continue;
         }
 
-        // Max retries reached
         if (DEBUG_LOG) {
-          console.log('[serp] max retries reached with empty results', {
-            blocked,
-            ms: Date.now() - startTime,
-          });
+          console.log('[serp] max retries reached', { blocked, ms: Date.now() - startTime });
         }
         this.pool.release(session, blocked);
         return { results: lastResults };
       } catch (err) {
         lastError = err;
-
-        const isTimeout =
-          err instanceof Error &&
-          (err.message.toLowerCase().includes('timeout') ||
-            err.message.toLowerCase().includes('timed out'));
+        const isTimeout = err instanceof Error && /timeout|timed out/i.test(err.message);
 
         if (DEBUG_LOG) {
           console.log('[serp] search error', {
@@ -242,19 +205,14 @@ class PooledSerpClient implements SerpClient {
           });
         }
 
-        // Retry if error is retriable
         if (isRetriableError(err) && attempt < MAX_RETRIES) {
           if (DEBUG_LOG) {
-            console.log('[serp] retriable error, retrying with new session', {
-              attempt: attempt + 1,
-              maxRetries: MAX_RETRIES,
-            });
+            console.log('[serp] retrying with new session', { attempt: attempt + 1 });
           }
           this.pool.release(session, isDisconnectError(err) || isTimeout);
           continue;
         }
 
-        // Non-retriable or max retries reached
         this.pool.release(session, isDisconnectError(err) || isTimeout);
         throw err;
       }
@@ -275,13 +233,11 @@ class PooledSerpClient implements SerpClient {
 /**
  * Create a SERP client
  */
-export function createSerpClient(
-  options: { mode?: 'pool'; poolSize?: number } = {}
-): SerpClient & { stats?: () => ReturnType<SessionPool['stats']> } {
+export function createSerpClient(options: { poolSize?: number } = {}): SerpClient {
   const poolSize = options.poolSize ?? POOL_SIZE;
 
   if (DEBUG_LOG) {
-    console.log('[serp] using pooled client', { poolSize });
+    console.log('[serp] creating pooled client', { poolSize });
   }
 
   return new PooledSerpClient(poolSize);

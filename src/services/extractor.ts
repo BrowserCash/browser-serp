@@ -1,7 +1,7 @@
-import { SearchResult } from './types.js';
+import type { SearchResult } from './types.js';
 
 /**
- * DOM extraction script - kept as string to avoid tsx transpilation issues
+ * DOM extraction script - extracts search results from Google SERP
  */
 const DOM_EXTRACTOR_SCRIPT = `
   var uniq = new Set();
@@ -40,15 +40,16 @@ const DOM_EXTRACTOR_SCRIPT = `
   return list.map(function(r, idx) { return { title: r.title, url: r.url, description: r.description, position: idx + 1 }; });
 `;
 
-export async function parseDomResults(
-  page: any,
-  count: number
-): Promise<SearchResult[]> {
+/**
+ * Parse search results from the current page DOM
+ */
+export async function parseDomResults(page: unknown, count: number): Promise<SearchResult[]> {
   const limit = Math.min(Math.max(count, 1), 100);
+  const pageAny = page as any;
 
-  const results = await page.evaluate(
+  const results = await pageAny.evaluate(
     ({ script, limit }: { script: string; limit: number }) => {
-      const fn = new Function("limit", script);
+      const fn = new Function('limit', script);
       return fn(limit);
     },
     { script: DOM_EXTRACTOR_SCRIPT, limit }
@@ -56,5 +57,3 @@ export async function parseDomResults(
 
   return results as SearchResult[];
 }
-
-

@@ -3,8 +3,8 @@ export interface SearchParams {
   count: number;
   country?: string;
   search_lang?: string;
-  freshness?: "day" | "week" | "month" | "year";
-  safesearch?: "off" | "moderate" | "strict";
+  freshness?: 'day' | 'week' | 'month' | 'year';
+  safesearch?: 'off' | 'moderate' | 'strict';
 }
 
 export interface SearchResult {
@@ -17,10 +17,8 @@ export interface SearchResult {
 export interface ConnectedSession {
   sessionId: string;
   cdpUrl: string;
-  browser: any;
-  page: any;
+  browser: unknown;
+  page: unknown;
   createdAt: number;
   useCount: number;
 }
-
-
