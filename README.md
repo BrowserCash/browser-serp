@@ -4,7 +4,7 @@
     <strong>High-performance Google SERP API powered by remote browsers.</strong>
   </p>
   <p>
-    Powered by <a href="https://browser.cash">Browser.cash</a> remote browsers.
+    Powered by <a href="https://browser.cash/developers">Browser.cash</a> remote browsers.
   </p>
 
   <p>
@@ -71,7 +71,7 @@ Unlike traditional SERP APIs that can be slow or expensive, Browser SERP is opti
 ### Prerequisites
 
 1.  **Node.js 18+** installed.
-2.  A **[Browser.cash](https://browser.cash)** API Key.
+2.  A **[Browser.cash](https://browser.cash/developers)** API Key.
 
 ### Installation
 
