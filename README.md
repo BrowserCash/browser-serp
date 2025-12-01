@@ -8,11 +8,11 @@
   </p>
 
   <p>
-    <a href="#-features">Features</a> •
-    <a href="#-quick-start">Quick Start</a> •
-    <a href="#-api-reference">API Reference</a> •
-    <a href="#-configuration">Configuration</a> •
-    <a href="#-docker">Docker</a>
+    <a href="#features">Features</a> •
+    <a href="#quick-start">Quick Start</a> •
+    <a href="#api-reference">API Reference</a> •
+    <a href="#configuration">Configuration</a> •
+    <a href="#docker">Docker</a>
   </p>
 
   <p>
@@ -58,7 +58,7 @@ Unlike traditional SERP APIs that can be slow or expensive, Browser SERP is opti
 - **🧹 Clean JSON Output**: Parses complex SERP layouts into structured, easy-to-consume JSON.
 - **🏎️ High Concurrency**: Built-in session management handles multiple parallel requests effortlessly.
 
-## ✨ Features
+## <a name="features"></a>✨ Features
 
 - **Live Google Search**: Get real-time results for any query.
 - **Smart Extraction**: Extracts organic results, snippets, and metadata.
@@ -66,7 +66,7 @@ Unlike traditional SERP APIs that can be slow or expensive, Browser SERP is opti
 - **Rate Limiting**: Built-in protection against abuse.
 - **Docker Ready**: Deploy anywhere with a lightweight container.
 
-## 🛠️ Quick Start
+## <a name="quick-start"></a>🛠️ Quick Start
 
 ### Prerequisites
 
@@ -111,7 +111,7 @@ npm start
 
 The server will start at `http://0.0.0.0:8080`.
 
-## 📚 API Reference
+## <a name="api-reference"></a>📚 API Reference
 
 ### 1. Search
 
@@ -201,7 +201,7 @@ curl http://localhost:8080/stats
 }
 ```
 
-## ⚙️ Configuration
+## <a name="configuration"></a>⚙️ Configuration
 
 ### Server & Infrastructure
 
@@ -219,7 +219,7 @@ curl http://localhost:8080/stats
 | `SERP_POOL_SIZE` | `3`     | Number of concurrent browser sessions to maintain. |
 | `RATE_LIMIT_MAX` | `100`   | Max requests per minute per IP.                    |
 
-## 🐳 Docker
+## <a name="docker"></a>🐳 Docker
 
 You can run Browser SERP easily using Docker.
 
