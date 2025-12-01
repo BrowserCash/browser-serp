@@ -8,11 +8,11 @@
   </p>
 
   <p>
-    <a href="#features">Features</a> •
-    <a href="#quick-start">Quick Start</a> •
-    <a href="#api-reference">API Reference</a> •
-    <a href="#configuration">Configuration</a> •
-    <a href="#docker">Docker</a>
+    <a href="#-features">Features</a> •
+    <a href="#-quick-start">Quick Start</a> •
+    <a href="#-api-reference">API Reference</a> •
+    <a href="#-configuration">Configuration</a> •
+    <a href="#-docker">Docker</a>
   </p>
 
   <p>
@@ -38,7 +38,7 @@
 
   <p>
     💡 <strong>Pro Tip:</strong> Use this with 
-    <a href="https://github.com/aibrowsers/teracrawl"><strong>Teracrawl</strong></a> 
+    <a href="https://github.com/Mega-Tera/teracrawl"><strong>Teracrawl</strong></a> 
     to convert these search results into full LLM-ready Markdown content.
   </p>
 </div>
