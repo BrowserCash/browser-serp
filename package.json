@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json --outDir dist"
   },
   "dependencies": {
+    "@browsercash/pool": "git+https://github.com/Mega-Tera/browser-pool.git",
     "@browsercash/sdk": "^0.4.0",
     "@fastify/rate-limit": "^8.1.0",
     "dotenv": "^16.4.5",
