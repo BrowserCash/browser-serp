@@ -38,7 +38,7 @@
 
   <p>
     💡 <strong>Pro Tip:</strong> Use this with 
-    <a href="https://github.com/Mega-Tera/teracrawl"><strong>Teracrawl</strong></a> 
+    <a href="https://github.com/BrowserCash/teracrawl"><strong>Teracrawl</strong></a> 
     to convert these search results into full LLM-ready Markdown content.
   </p>
 </div>
@@ -56,7 +56,7 @@ Unlike traditional SERP APIs that can be slow or expensive, Browser SERP is opti
 - **⚡ Ultra-Fast Results**: Leverages connection pooling to keep browsers hot and ready.
 - **🛡️ Reliable Access**: Uses residential-grade remote browsers to ensure high success rates.
 - **🧹 Clean JSON Output**: Parses complex SERP layouts into structured, easy-to-consume JSON.
-- **🏎️ High Concurrency**: Built-in <a href="https://github.com/Mega-Tera/browser-pool">session management</a> handles multiple parallel requests effortlessly.
+- **🏎️ High Concurrency**: Built-in <a href="https://github.com/BrowserCash/browser-pool">session management</a> handles multiple parallel requests effortlessly.
 
 ## <a name="features"></a>✨ Features
 
@@ -77,7 +77,7 @@ Unlike traditional SERP APIs that can be slow or expensive, Browser SERP is opti
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/browser-serp.git
+git clone https://github.com/BrowserCash/browser-serp.git
 cd browser-serp
 
 # Install dependencies
