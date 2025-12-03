@@ -1,7 +1,8 @@
-import type { FastifyInstance } from 'fastify'
-import { z } from 'zod'
-import { dispatchBrowserQuery } from '../services/browser-cash.js'
-import { rankAndFormat } from '../services/ranking.js'
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import type { SerpClient, SearchResult } from '../services/serp.js';
+
+const DEBUG_LOG = process.env.SERP_DEBUG_LOG === '1' || process.env.SERP_DEBUG_LOG === 'true';
 
 const searchSchema = z.object({
   q: z.string().min(1),
@@ -10,23 +11,87 @@ const searchSchema = z.object({
   search_lang: z.string().optional(),
   freshness: z.enum(['day', 'week', 'month', 'year']).optional(),
   safesearch: z.enum(['off', 'moderate', 'strict']).optional(),
-})
+});
 
-export async function searchRoute(app: FastifyInstance) {
+type SearchInput = z.infer<typeof searchSchema>;
+
+interface SearchRouteOptions {
+  serpClient: SerpClient;
+}
+
+interface FormattedResponse {
+  type: 'search';
+  query: {
+    original: string;
+    show_strict_warning: boolean;
+  };
+  web: {
+    results: SearchResult[];
+    family_friendly: boolean;
+  };
+  mixed: {
+    type: 'mixed';
+    main: SearchResult[];
+    top: SearchResult[];
+    side: SearchResult[];
+  };
+}
+
+function formatResponse(params: SearchInput, results: SearchResult[]): FormattedResponse {
+  return {
+    type: 'search',
+    query: {
+      original: params.q,
+      show_strict_warning: false,
+    },
+    web: {
+      results,
+      family_friendly: (params.safesearch ?? 'moderate') !== 'off',
+    },
+    mixed: {
+      type: 'mixed',
+      main: results.slice(0, Math.min(3, results.length)),
+      top: [],
+      side: [],
+    },
+  };
+}
+
+export async function searchRoute(app: FastifyInstance, opts: SearchRouteOptions): Promise<void> {
   app.post('/search', async (req, reply) => {
-    const parsed = searchSchema.safeParse(req.body ?? {})
+    const start = Date.now();
+
+    const parsed = searchSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      return reply.status(400).send({ error: 'invalid_request', details: parsed.error.flatten() })
+      return reply.status(400).send({
+        error: 'invalid_request',
+        details: parsed.error.flatten(),
+      });
     }
-    const params = parsed.data
+
+    const params = parsed.data;
 
     try {
-      const rawResults = await dispatchBrowserQuery(params)
-      const response = rankAndFormat(params, rawResults)
-      return reply.send(response)
-    } catch (err: any) {
-      req.log.error({ err }, 'search failed')
-      return reply.status(502).send({ error: 'upstream_error', message: err?.message || 'failed to fetch SERP' })
+      const { results } = await opts.serpClient.search(params);
+      const response = formatResponse(params, results);
+
+      if (DEBUG_LOG) {
+        console.log('[search] done', { ms: Date.now() - start, results: results.length });
+      }
+
+      return reply.send(response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'failed to fetch SERP';
+      req.log.error({ err }, 'search failed');
+
+      if (DEBUG_LOG) {
+        console.error('[search] failed', { ms: Date.now() - start, error: message });
+      }
+
+      return reply.status(502).send({
+        error: 'upstream_error',
+        message,
+      });
     }
-  })
+  });
 }

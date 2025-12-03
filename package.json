@@ -1,24 +1,37 @@
 {
-  "name": "browsercrawl-serp-api",
-  "version": "0.1.0",
+  "name": "@browsercash/serp",
+  "version": "1.0.0",
+  "description": "High-performance Google SERP API powered by Browser.cash",
   "type": "module",
-  "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json --outDir dist",
-    "lint": "echo \"(add a linter)\""
+    "typecheck": "tsc --noEmit"
   },
+  "keywords": [
+    "serp",
+    "google",
+    "search",
+    "browser",
+    "playwright"
+  ],
+  "license": "MIT",
   "dependencies": {
-    "@fastify/rate-limit": "^7.0.0",
+    "@browsercash/pool": "git+https://github.com/Mega-Tera/browser-pool.git",
+    "@browsercash/sdk": "^0.4.0",
+    "@fastify/rate-limit": "^8.1.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
-    "undici": "^6.20.1",
+    "patchright-core": "^1.56.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
