@@ -1,14 +1,19 @@
 import 'dotenv/config';
+import { WebSocket } from 'ws';
 import Fastify from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import { searchRoute } from './routes/search.js';
+import { serpSearchRoute } from './routes/serp-search.js';
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './env.js';
 import { createSerpClient, type SerpClient } from './services/serp.js';
+
+if (!globalThis.WebSocket) {
+  // @ts-expect-error ws is API-compatible with browser WebSocket.
+  globalThis.WebSocket = WebSocket;
+}
 
 const PORT = loadEnvNumber('PORT', 8080);
 const RATE_LIMIT_MAX = loadEnvNumber('RATE_LIMIT_MAX', 100);
 const ALLOWED_ORIGINS = loadEnvStringList('ALLOWED_ORIGINS', ['*']);
-const POOL_SIZE = loadEnvNumber('SERP_POOL_SIZE', 3);
 
 async function buildServer(serpClient: SerpClient) {
   const app = Fastify({
@@ -42,7 +47,7 @@ async function buildServer(serpClient: SerpClient) {
   app.get('/stats', async () => ({ pool: serpClient.stats() }));
 
   // Search API
-  await app.register(searchRoute, { prefix: '/api/v1', serpClient });
+  await app.register(serpSearchRoute, { prefix: '/api/v1', serpClient });
 
   // Cleanup on close
   app.addHook('onClose', async () => {
@@ -55,11 +60,9 @@ async function buildServer(serpClient: SerpClient) {
 }
 
 async function main() {
-  // Initialize pool
-  const serpClient = createSerpClient({ poolSize: POOL_SIZE });
-  await serpClient.init();
-
-  // Build and start server
+  // Create client and start server first so platform health checks can pass
+  // while the pool warms in the background.
+  const serpClient = createSerpClient();
   const app = await buildServer(serpClient);
 
   // Graceful shutdown
@@ -99,7 +102,16 @@ async function main() {
   });
 
   await app.listen({ port: PORT, host: '0.0.0.0' });
-  app.log.info({ port: PORT, poolSize: POOL_SIZE }, 'SERP API listening');
+  app.log.info({ port: PORT, pool: serpClient.stats() }, 'SERP API listening');
+
+  void serpClient
+    .init()
+    .then(() => {
+      app.log.info({ pool: serpClient.stats() }, 'SERP pool warmup complete');
+    })
+    .catch((err) => {
+      app.log.error({ err }, 'SERP pool warmup failed');
+    });
 }
 
 main().catch((err) => {
