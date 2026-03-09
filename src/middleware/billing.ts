@@ -1,13 +1,13 @@
 export const MILLICENTS_PER_UNIT = 300;
 
-// Cached post-charge balance per orgId — updated after every billing call.
-// hasCredit() is a synchronous 0ms check, no network calls.
-const balanceCache = new Map<string, number>();
+const BALANCE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const balanceCache = new Map<string, { balance: number; expiresAt: number }>();
 
 export function hasCredit(orgId: string): boolean {
-  const cached = balanceCache.get(orgId);
-  if (cached === undefined) return true; // no data yet — allow through
-  return cached >= MILLICENTS_PER_UNIT;
+  const entry = balanceCache.get(orgId);
+  if (!entry || Date.now() > entry.expiresAt) return true; // unknown or stale — allow through
+  return entry.balance >= MILLICENTS_PER_UNIT;
 }
 
 export function fireBilling(orgId: string, millicents: number, idempotencyKey: string): void {
@@ -31,7 +31,9 @@ export function fireBilling(orgId: string, millicents: number, idempotencyKey: s
       if (!res.ok) return;
       const data = await res.json() as { wallet?: { balance_millicents?: number } };
       const balance = data.wallet?.balance_millicents;
-      if (typeof balance === 'number') balanceCache.set(orgId, balance);
+      if (typeof balance === 'number') {
+        balanceCache.set(orgId, { balance, expiresAt: Date.now() + BALANCE_CACHE_TTL_MS });
+      }
     })
     .catch(() => {});
 }
