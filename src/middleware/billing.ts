@@ -1,5 +1,15 @@
 export const MILLICENTS_PER_UNIT = 300;
 
+// Cached post-charge balance per orgId — updated after every billing call.
+// hasCredit() is a synchronous 0ms check, no network calls.
+const balanceCache = new Map<string, number>();
+
+export function hasCredit(orgId: string): boolean {
+  const cached = balanceCache.get(orgId);
+  if (cached === undefined) return true; // no data yet — allow through
+  return cached >= MILLICENTS_PER_UNIT;
+}
+
 export function fireBilling(orgId: string, millicents: number, idempotencyKey: string): void {
   const baseUrl = process.env.BILLING_V2_BASE_URL;
   const serviceKey = process.env.BILLING_V2_SERVICE_KEY;
@@ -16,5 +26,12 @@ export function fireBilling(orgId: string, millicents: number, idempotencyKey: s
     },
     body: JSON.stringify({ orgId, millicents, idempotencyKey }),
     signal: controller.signal,
-  }).catch(() => {});
+  })
+    .then(async (res) => {
+      if (!res.ok) return;
+      const data = await res.json() as { wallet?: { balance_millicents?: number } };
+      const balance = data.wallet?.balance_millicents;
+      if (typeof balance === 'number') balanceCache.set(orgId, balance);
+    })
+    .catch(() => {});
 }

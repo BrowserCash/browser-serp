@@ -7,7 +7,7 @@ import { serpSearchRoute } from './routes/serp-search.js';
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './env.js';
 import { createSerpClient, type SerpClient } from './services/serp.js';
 import { validateApiKey } from './middleware/auth-cache.js';
-import { fireBilling, MILLICENTS_PER_UNIT } from './middleware/billing.js';
+import { fireBilling, hasCredit, MILLICENTS_PER_UNIT } from './middleware/billing.js';
 import { fireLog } from './middleware/d1-logger.js';
 import './middleware/types.js';
 
@@ -59,6 +59,10 @@ async function buildServer(serpClient: SerpClient) {
     }
 
     req.userContext = userContext;
+
+    if (!hasCredit(userContext.orgId)) {
+      return reply.status(402).send({ message: 'Insufficient credits', statusCode: 402 });
+    }
   });
 
   // Capture response body before it's flushed
