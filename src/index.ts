@@ -1,10 +1,15 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import Fastify from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import { serpSearchRoute } from './routes/serp-search.js';
 import { loadEnvNumber, loadEnvString, loadEnvStringList } from './env.js';
 import { createSerpClient, type SerpClient } from './services/serp.js';
+import { validateApiKey } from './middleware/auth-cache.js';
+import { fireBilling, MILLICENTS_PER_UNIT } from './middleware/billing.js';
+import { fireLog } from './middleware/d1-logger.js';
+import './middleware/types.js';
 
 if (!globalThis.WebSocket) {
   // @ts-expect-error ws is API-compatible with browser WebSocket.
@@ -23,6 +28,72 @@ async function buildServer(serpClient: SerpClient) {
   await app.register(rateLimit, {
     max: RATE_LIMIT_MAX,
     timeWindow: '1 minute',
+  });
+
+  // Decorate request with auth/tracking fields
+  app.decorateRequest('userContext', null);
+  app.decorateRequest('requestId', '');
+  app.decorateRequest('requestStartMs', 0);
+  app.decorateRequest('resultCount', 0);
+  app.decorateRequest('responsePayload', '');
+
+  const requireAuth = process.env.REQUIRE_AUTH === 'true';
+
+  // Auth
+  app.addHook('preHandler', async (req, reply) => {
+    if (req.url === '/health' || req.url === '/stats') return;
+    req.requestId = randomUUID();
+    req.requestStartMs = Date.now();
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      if (requireAuth) return reply.status(401).send({ message: 'Unauthorized', statusCode: 401 });
+      return;
+    }
+
+    const key = authHeader.slice(7);
+    const userContext = await validateApiKey(key);
+    if (!userContext) {
+      if (requireAuth) return reply.status(401).send({ message: 'Unauthorized', statusCode: 401 });
+      return;
+    }
+
+    req.userContext = userContext;
+  });
+
+  // Capture response body before it's flushed
+  app.addHook('onSend', (req, _reply, payload, done) => {
+    req.responsePayload = typeof payload === 'string' ? payload.slice(0, 100_000) : '';
+    done(null, payload);
+  });
+
+  // Billing + logging (fire-and-forget after response is flushed)
+  app.addHook('onResponse', (req, reply, done) => {
+    if (!req.userContext) { done(); return; }
+
+    const millicents = MILLICENTS_PER_UNIT;
+    const idem = `usage:browser-serp:${req.requestId}`;
+
+    fireBilling(req.userContext.orgId, millicents, idem);
+
+    const body = req.body as Record<string, unknown> | null;
+    const queryOrUrl = typeof body?.q === 'string' ? body.q : null;
+
+    fireLog({
+      service: 'browser-serp',
+      userContext: req.userContext,
+      endpoint: req.url,
+      queryOrUrl,
+      statusCode: reply.statusCode,
+      resultCount: req.resultCount,
+      latencyMs: Date.now() - req.requestStartMs,
+      requestBodyJson: body ? JSON.stringify(body).slice(0, 1000) : null,
+      responseSummaryJson: req.responsePayload || null,
+      billedMillicents: millicents,
+      idempotencyKey: idem,
+    });
+
+    done();
   });
 
   // CORS

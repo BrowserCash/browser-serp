@@ -159,6 +159,7 @@ export async function serpSearchRoute(app: FastifyInstance, opts: SerpSearchRout
         await worker;
       }
 
+      req.resultCount = out.length;
       return reply.status(200).send(out);
     }
 
@@ -172,9 +173,11 @@ export async function serpSearchRoute(app: FastifyInstance, opts: SerpSearchRout
 
     try {
       const execution = await opts.serpClient.search(toSearchParams(parsed.value));
+      req.resultCount = execution.organic.length;
       return reply.status(200).send(formatSerpResponse(parsed.value, execution));
     } catch (error) {
       if (shouldReturnBestEffort(error)) {
+        req.resultCount = 0;
         return reply.status(200).send(formatSerpEmptyResponse(parsed.value));
       }
 
